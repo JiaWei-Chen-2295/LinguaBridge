@@ -1,0 +1,22 @@
+{
+  "name": "lingua-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Windows-first AI realtime subtitle companion for Chinese technical learners.",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=22 <24",
+    "npm": ">=10"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3"
+  }
+}
