@@ -18,6 +18,25 @@ export interface GatewayConfig {
   devInviteQuotaMinutes: number;
   databaseUrlConfigured: boolean;
   redisUrlConfigured: boolean;
+  objectStorage: ObjectStorageConfig;
+}
+
+export type ObjectStorageProvider = "disabled" | "minio";
+
+export interface ObjectStorageConfig {
+  provider: ObjectStorageProvider;
+  bucket: string;
+  region: string;
+  objectPrefix: string;
+  minio: MinioConfig;
+}
+
+export interface MinioConfig {
+  endPoint: string;
+  port: number;
+  useSSL: boolean;
+  accessKey: string;
+  secretKey: string;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): GatewayConfig {
@@ -31,7 +50,26 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): GatewayConfig 
     devInviteCode: readString(env, "DEV_INVITE_CODE", "ALPHA-DEV-2026"),
     devInviteQuotaMinutes: readInteger(env, "DEV_INVITE_QUOTA_MINUTES", 180),
     databaseUrlConfigured: hasNonEmptyString(env.DATABASE_URL),
-    redisUrlConfigured: hasNonEmptyString(env.REDIS_URL)
+    redisUrlConfigured: hasNonEmptyString(env.REDIS_URL),
+    objectStorage: readObjectStorageConfig(env)
+  };
+}
+
+function readObjectStorageConfig(env: NodeJS.ProcessEnv): ObjectStorageConfig {
+  return {
+    provider: readObjectStorageProvider(env, "OBJECT_STORAGE_PROVIDER", "disabled"),
+    bucket: readString(env, "OBJECT_STORAGE_BUCKET", "lingua-bridge-dev"),
+    region: readString(env, "OBJECT_STORAGE_REGION", "us-east-1"),
+    objectPrefix: normalizeObjectPrefix(
+      readString(env, "OBJECT_STORAGE_PREFIX", "")
+    ),
+    minio: {
+      endPoint: readString(env, "MINIO_ENDPOINT", "127.0.0.1"),
+      port: readInteger(env, "MINIO_PORT", 9000),
+      useSSL: readBoolean(env, "MINIO_USE_SSL", false),
+      accessKey: readString(env, "MINIO_ACCESS_KEY", "lingua_bridge_minio"),
+      secretKey: readString(env, "MINIO_SECRET_KEY", "lingua_bridge_minio_dev")
+    }
   };
 }
 
@@ -58,6 +96,27 @@ function readInteger(
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function readBoolean(
+  env: NodeJS.ProcessEnv,
+  key: string,
+  fallback: boolean
+): boolean {
+  const raw = env[key];
+  if (!hasNonEmptyString(raw)) {
+    return fallback;
+  }
+
+  if (raw === "true" || raw === "1") {
+    return true;
+  }
+
+  if (raw === "false" || raw === "0") {
+    return false;
+  }
+
+  return fallback;
+}
+
 function readLogLevel(
   env: NodeJS.ProcessEnv,
   key: string,
@@ -81,6 +140,24 @@ function isLogLevel(value: string): value is LogLevel {
     value === "trace" ||
     value === "silent"
   );
+}
+
+function readObjectStorageProvider(
+  env: NodeJS.ProcessEnv,
+  key: string,
+  fallback: ObjectStorageProvider
+): ObjectStorageProvider {
+  const raw = env[key];
+  if (!hasNonEmptyString(raw)) {
+    return fallback;
+  }
+
+  return raw === "minio" || raw === "disabled" ? raw : fallback;
+}
+
+function normalizeObjectPrefix(value: string): string {
+  const trimmed = value.trim().replace(/^\/+|\/+$/g, "");
+  return trimmed.length === 0 ? "" : `${trimmed}/`;
 }
 
 function hasNonEmptyString(value: string | undefined): value is string {

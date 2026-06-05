@@ -10,10 +10,15 @@ import {
   createInMemoryStore,
   type InMemoryStore
 } from "./storage/in-memory-store";
+import {
+  createObjectStorage,
+  type ObjectStorage
+} from "./storage/object-storage";
 
 export interface GatewayApp {
   app: FastifyInstance;
   store: InMemoryStore;
+  objectStorage: ObjectStorage;
   config: GatewayConfig;
 }
 
@@ -27,6 +32,8 @@ export async function buildGatewayApp(
     devInviteCode: config.devInviteCode,
     devInviteQuotaMinutes: config.devInviteQuotaMinutes
   });
+  const objectStorage = createObjectStorage(config);
+  await objectStorage.ensureReady();
 
   registerHealthRoutes(app, config);
   registerInviteRoutes(app, store);
@@ -34,5 +41,5 @@ export async function buildGatewayApp(
   registerExportRoutes(app, store);
   registerRealtimeGateway(app, { config, store });
 
-  return { app, store, config };
+  return { app, store, objectStorage, config };
 }

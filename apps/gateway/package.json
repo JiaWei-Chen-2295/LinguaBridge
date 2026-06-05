@@ -16,6 +16,7 @@
     "@lingua-bridge/mock-models": "file:../../packages/mock-models",
     "@lingua-bridge/protocol": "file:../../packages/protocol",
     "fastify": "^5.3.0",
+    "minio": "^8.0.7",
     "ws": "^8.18.3"
   },
   "devDependencies": {
