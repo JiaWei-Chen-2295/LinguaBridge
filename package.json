@@ -10,7 +10,9 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "test": "npm run test --workspaces --if-present"
+    "test": "npm run test --workspaces --if-present",
+    "dev:gateway": "npm run dev -w @lingua-bridge/gateway",
+    "dev:desktop": "npm run dev -w @lingua-bridge/desktop"
   },
   "engines": {
     "node": ">=22 <24",
