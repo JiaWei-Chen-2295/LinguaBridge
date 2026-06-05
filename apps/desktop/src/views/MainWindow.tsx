@@ -15,7 +15,7 @@ import {
   TimerReset
 } from "lucide-react";
 import type { ReactElement } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { IconButton } from "../components/IconButton";
 import { MetricTile } from "../components/MetricTile";
@@ -24,11 +24,13 @@ import { glossaryEntries, historySessions, subtitleSegments, usageSummary } from
 import { formatDurationRange, formatMinutes, formatPercent } from "../lib/format";
 import {
   getAudioCaptureStatus,
+  listenToAudioFrames,
   listAudioDevices,
   startAudioCapture,
   stopAudioCapture,
   toAudioCommandError
 } from "../services/audioCommands";
+import { RealtimeGatewayConnection } from "../services/realtimeGateway";
 import type { AudioCaptureStatus, AudioDevice } from "../types/audio";
 import type { SubtitleSegmentEvent } from "../types/protocol";
 
@@ -47,8 +49,18 @@ export function MainWindow(): ReactElement {
   const [captureStatus, setCaptureStatus] = useState<AudioCaptureStatus | null>(null);
   const [sessionMode, setSessionMode] = useState<SessionMode>("idle");
   const [feedback, setFeedback] = useState<string | null>(null);
+  const [liveSubtitleSegments, setLiveSubtitleSegments] =
+    useState<SubtitleSegmentEvent[]>(subtitleSegments);
+  const realtimeConnectionRef = useRef<RealtimeGatewayConnection | null>(null);
+  const audioFrameUnlistenRef = useRef<(() => void) | null>(null);
+  const activeSessionIdRef = useRef<string | null>(null);
+  const audioSendingEnabledRef = useRef(false);
 
-  const canStart = inviteActivated && privacyAccepted && sessionMode !== "capturing";
+  const canStart =
+    inviteActivated &&
+    privacyAccepted &&
+    sessionMode !== "capturing" &&
+    sessionMode !== "paused";
   const activeDeviceName = useMemo(() => {
     if (selectedDeviceId === null) {
       return "Default Windows output";
@@ -86,6 +98,12 @@ export function MainWindow(): ReactElement {
 
     return () => {
       cancelled = true;
+      audioSendingEnabledRef.current = false;
+      audioFrameUnlistenRef.current?.();
+      audioFrameUnlistenRef.current = null;
+      realtimeConnectionRef.current?.close();
+      realtimeConnectionRef.current = null;
+      void stopAudioCapture();
     };
   }, []);
 
@@ -100,7 +118,7 @@ export function MainWindow(): ReactElement {
 
     setInviteCode(normalizedCode);
     setInviteActivated(true);
-    setFeedback("邀请码已在本地通过格式校验，等待网关接入真实激活。");
+    setFeedback("邀请码已在本地通过格式校验，开始伴学时会交给 Gateway 激活。");
   }
 
   async function handleStart(): Promise<void> {
@@ -117,6 +135,34 @@ export function MainWindow(): ReactElement {
     setFeedback(null);
 
     try {
+      const connection = new RealtimeGatewayConnection({
+        onSubtitle: (event) => {
+          setLiveSubtitleSegments((currentSegments) =>
+            upsertSubtitleSegment(currentSegments, event.payload)
+          );
+        },
+        onError: (event) => {
+          setFeedback(event.payload.message);
+        },
+        onStopped: (event) => {
+          setFeedback(`会话已停止，时长 ${Math.round(event.payload.durationMs / 1_000)} 秒。`);
+        }
+      });
+      realtimeConnectionRef.current = connection;
+      const started = await connection.startSession({
+        inviteCode,
+        deviceId: selectedDeviceId
+      });
+      activeSessionIdRef.current = started.sessionId;
+
+      audioFrameUnlistenRef.current = await listenToAudioFrames((frame) => {
+        if (!audioSendingEnabledRef.current) {
+          return;
+        }
+
+        connection.sendAudioFrame(started.sessionId, frame);
+      });
+
       const nextStatus = await startAudioCapture({
         deviceId: selectedDeviceId,
         sampleRateHz: 16_000,
@@ -124,25 +170,30 @@ export function MainWindow(): ReactElement {
         frameDurationMs: 20
       });
 
+      audioSendingEnabledRef.current = true;
       setCaptureStatus(nextStatus);
       setSessionMode("capturing");
+      setFeedback(`真实链路已启动：Gateway session ${started.sessionId}`);
     } catch (error) {
+      await cleanupRealtimeSession("device_error");
       const commandError = toAudioCommandError(error);
-      setFeedback(commandError.message);
+      setFeedback(error instanceof Error ? error.message : commandError.message);
       setSessionMode("error");
     }
   }
 
   function handlePause(): void {
     if (sessionMode === "capturing") {
+      audioSendingEnabledRef.current = false;
       setSessionMode("paused");
-      setFeedback("字幕流已暂停展示；真实网关接入后这里会暂停发送音频帧。");
+      setFeedback("字幕流已暂停发送。");
       return;
     }
 
     if (sessionMode === "paused") {
+      audioSendingEnabledRef.current = true;
       setSessionMode("capturing");
-      setFeedback("字幕流已恢复展示。");
+      setFeedback("字幕流已恢复发送。");
     }
   }
 
@@ -150,10 +201,13 @@ export function MainWindow(): ReactElement {
     setFeedback(null);
 
     try {
+      audioSendingEnabledRef.current = false;
       const nextStatus = await stopAudioCapture();
+      await cleanupRealtimeSession("user");
       setCaptureStatus(nextStatus);
       setSessionMode("idle");
     } catch (error) {
+      await cleanupRealtimeSession("device_error");
       const commandError = toAudioCommandError(error);
       setFeedback(commandError.message);
       setSessionMode(commandError.kind === "notCapturing" ? "idle" : "error");
@@ -169,6 +223,25 @@ export function MainWindow(): ReactElement {
       const commandError = toAudioCommandError(error);
       setFeedback(commandError.message);
     }
+  }
+
+  async function cleanupRealtimeSession(
+    reason: "user" | "network" | "quota_exhausted" | "device_error"
+  ): Promise<void> {
+    const connection = realtimeConnectionRef.current;
+    const sessionId = activeSessionIdRef.current;
+
+    audioSendingEnabledRef.current = false;
+    audioFrameUnlistenRef.current?.();
+    audioFrameUnlistenRef.current = null;
+
+    if (connection !== null && sessionId !== null) {
+      await connection.stopSession(sessionId, reason).catch(() => undefined);
+    }
+
+    connection?.close();
+    realtimeConnectionRef.current = null;
+    activeSessionIdRef.current = null;
   }
 
   return (
@@ -310,7 +383,7 @@ export function MainWindow(): ReactElement {
             <h2>实时字幕预览</h2>
           </div>
           <div className="subtitle-feed">
-            {subtitleSegments.map((segment) => (
+            {liveSubtitleSegments.map((segment) => (
               <SubtitlePreview key={segment.segmentId} segment={segment} />
             ))}
           </div>
@@ -359,6 +432,30 @@ function SubtitlePreview({ segment }: { segment: SubtitleSegmentEvent }): ReactE
       <p className="source-line">{segment.sourceText}</p>
     </article>
   );
+}
+
+function upsertSubtitleSegment(
+  segments: SubtitleSegmentEvent[],
+  nextSegment: SubtitleSegmentEvent
+): SubtitleSegmentEvent[] {
+  const existingIndex = segments.findIndex(
+    (segment) => segment.segmentId === nextSegment.segmentId
+  );
+
+  if (existingIndex === -1) {
+    return [...segments, nextSegment].sort(sortSubtitleSegments);
+  }
+
+  const nextSegments = [...segments];
+  nextSegments[existingIndex] = nextSegment;
+  return nextSegments.sort(sortSubtitleSegments);
+}
+
+function sortSubtitleSegments(
+  left: SubtitleSegmentEvent,
+  right: SubtitleSegmentEvent
+): number {
+  return left.startAtMs - right.startAtMs;
 }
 
 function HistoryPanel(): ReactElement {

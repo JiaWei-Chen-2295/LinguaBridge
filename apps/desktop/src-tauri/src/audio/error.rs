@@ -17,7 +17,7 @@ pub enum AudioCaptureErrorKind {
     Internal,
 }
 
-#[derive(Debug, Error, Serialize)]
+#[derive(Debug, Clone, Error, Serialize)]
 #[error("{message}")]
 #[serde(rename_all = "camelCase")]
 pub struct AudioCaptureError {

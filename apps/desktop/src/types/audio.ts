@@ -30,6 +30,16 @@ export interface AudioCaptureStatus {
   lastError: string | null;
 }
 
+export interface AudioFramePayload {
+  frameId: string;
+  sequence: number;
+  timestampMs: number;
+  sampleRateHz: number;
+  channels: number;
+  frameDurationMs: number;
+  samples: number[];
+}
+
 export type AudioCaptureErrorKind =
   | "unsupportedPlatform"
   | "wasapiUnavailable"

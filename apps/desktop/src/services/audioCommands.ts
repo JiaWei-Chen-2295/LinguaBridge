@@ -1,11 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type {
   AudioCaptureConfig,
+  AudioFramePayload,
   AudioCaptureStatus,
   AudioCommandError,
   AudioDevice
 } from "../types/audio";
+
+export const AUDIO_FRAME_EVENT = "audio-frame";
 
 const defaultAudioConfig: AudioCaptureConfig = {
   deviceId: null,
@@ -35,6 +39,14 @@ export async function startAudioCapture(
 
 export async function stopAudioCapture(): Promise<AudioCaptureStatus> {
   return invoke<AudioCaptureStatus>("stop_audio_capture");
+}
+
+export async function listenToAudioFrames(
+  handler: (payload: AudioFramePayload) => void
+): Promise<UnlistenFn> {
+  return listen<AudioFramePayload>(AUDIO_FRAME_EVENT, (event) => {
+    handler(event.payload);
+  });
 }
 
 export function toAudioCommandError(error: unknown): AudioCommandError {

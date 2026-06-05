@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+pub const AUDIO_FRAME_EVENT: &str = "audio-frame";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioCaptureConfig {
@@ -67,6 +69,18 @@ pub struct AudioCaptureStatus {
     pub channels: u16,
     pub frame_duration_ms: u16,
     pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioFramePayload {
+    pub frame_id: String,
+    pub sequence: u64,
+    pub timestamp_ms: u64,
+    pub sample_rate_hz: u32,
+    pub channels: u16,
+    pub frame_duration_ms: u16,
+    pub samples: Vec<i16>,
 }
 
 impl Default for AudioCaptureStatus {

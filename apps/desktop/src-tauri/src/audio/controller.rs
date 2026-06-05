@@ -4,6 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use super::error::{AudioCaptureError, AudioCaptureErrorKind};
 use super::types::{AudioCaptureConfig, AudioCaptureStatus, AudioCaptureStatusKind, AudioDevice};
 use super::wasapi;
+use tauri::AppHandle;
 
 #[derive(Default)]
 pub struct AudioState {
@@ -30,6 +31,7 @@ impl AudioState {
     pub fn start(
         &self,
         config: AudioCaptureConfig,
+        app: AppHandle,
     ) -> Result<AudioCaptureStatus, AudioCaptureError> {
         let mut status = self.inner.lock().map_err(|_| {
             AudioCaptureError::new(
@@ -53,7 +55,7 @@ impl AudioState {
         status.frame_duration_ms = config.frame_duration_ms;
         status.last_error = None;
 
-        match wasapi::start_loopback_capture(&config) {
+        match wasapi::start_loopback_capture(&config, app) {
             Ok(()) => {
                 status.state = AudioCaptureStatusKind::Capturing;
                 status.started_at_ms = Some(now_ms());
@@ -82,7 +84,13 @@ impl AudioState {
         }
 
         status.state = AudioCaptureStatusKind::Stopping;
-        wasapi::stop_loopback_capture()?;
+        if let Err(error) = wasapi::stop_loopback_capture() {
+            status.state = AudioCaptureStatusKind::Error;
+            status.active_device_id = None;
+            status.started_at_ms = None;
+            status.last_error = Some(error.message.clone());
+            return Err(error);
+        }
 
         status.state = AudioCaptureStatusKind::Idle;
         status.active_device_id = None;
