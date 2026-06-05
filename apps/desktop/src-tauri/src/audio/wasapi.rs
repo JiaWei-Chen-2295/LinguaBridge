@@ -22,9 +22,9 @@ use windows::{
                 eConsole, eRender, IAudioCaptureClient, IAudioClient, IMMDeviceEnumerator,
                 MMDeviceEnumerator, AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED,
                 AUDCLNT_STREAMFLAGS_LOOPBACK, WAVEFORMATEX, WAVEFORMATEXTENSIBLE,
-                WAVE_FORMAT_EXTENSIBLE, WAVE_FORMAT_PCM,
+                WAVE_FORMAT_PCM,
             },
-            KernelStreaming::{KSDATAFORMAT_SUBTYPE_IEEE_FLOAT, KSDATAFORMAT_SUBTYPE_PCM},
+            KernelStreaming::KSDATAFORMAT_SUBTYPE_PCM,
         },
         System::Com::{
             CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
@@ -32,6 +32,13 @@ use windows::{
         },
     },
 };
+
+#[cfg(windows)]
+const WAVE_FORMAT_EXTENSIBLE_TAG: u32 = 0xFFFE;
+
+#[cfg(windows)]
+const KSDATAFORMAT_SUBTYPE_IEEE_FLOAT_GUID: GUID =
+    GUID::from_u128(0x00000003_0000_0010_8000_00aa00389b71);
 
 #[cfg(windows)]
 struct CaptureThread {
@@ -321,40 +328,52 @@ unsafe fn read_mix_format(format_ptr: *mut WAVEFORMATEX) -> Result<MixFormat, Au
     }
 
     let format = *format_ptr;
-    let mut sample_kind = match (format.wFormatTag as u32, format.wBitsPerSample) {
+    let format_tag = format.wFormatTag as u32;
+    let bits_per_sample = format.wBitsPerSample;
+    let sample_rate = format.nSamplesPerSec;
+    let channels = format.nChannels.max(1);
+    let block_align = format.nBlockAlign;
+
+    let mut sample_kind = match (format_tag, bits_per_sample) {
         (WAVE_FORMAT_PCM, 16) => SampleKind::Int16,
         (WAVE_FORMAT_PCM, 24) => SampleKind::Int24,
         (WAVE_FORMAT_PCM, 32) => SampleKind::Int32,
         (3, 32) => SampleKind::Float32,
-        (WAVE_FORMAT_EXTENSIBLE, _) => {
-            let extensible = *(format_ptr as *const WAVEFORMATEXTENSIBLE);
-            sample_kind_from_subformat(extensible.SubFormat, format.wBitsPerSample)?
+        (WAVE_FORMAT_EXTENSIBLE_TAG, _) => {
+            let subformat = read_extensible_subformat(format_ptr);
+            sample_kind_from_subformat(subformat, bits_per_sample)?
         }
         _ => {
             return Err(AudioCaptureError::new(
                 AudioCaptureErrorKind::WasapiUnavailable,
                 format!(
                     "Unsupported WASAPI mix format tag {} with {} bits per sample.",
-                    format.wFormatTag, format.wBitsPerSample
+                    format_tag, bits_per_sample
                 ),
                 true,
             ));
         }
     };
 
-    if format.wFormatTag as u32 == WAVE_FORMAT_EXTENSIBLE && format.wBitsPerSample == 32 {
-        let extensible = *(format_ptr as *const WAVEFORMATEXTENSIBLE);
-        if extensible.SubFormat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT {
+    if format_tag == WAVE_FORMAT_EXTENSIBLE_TAG && bits_per_sample == 32 {
+        let subformat = read_extensible_subformat(format_ptr);
+        if subformat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT_GUID {
             sample_kind = SampleKind::Float32;
         }
     }
 
     Ok(MixFormat {
-        sample_rate: format.nSamplesPerSec,
-        channels: format.nChannels.max(1),
-        block_align: format.nBlockAlign,
+        sample_rate,
+        channels,
+        block_align,
         sample_kind,
     })
+}
+
+#[cfg(windows)]
+unsafe fn read_extensible_subformat(format_ptr: *const WAVEFORMATEX) -> GUID {
+    let extensible_ptr = format_ptr.cast::<WAVEFORMATEXTENSIBLE>();
+    std::ptr::addr_of!((*extensible_ptr).SubFormat).read_unaligned()
 }
 
 #[cfg(windows)]
@@ -362,7 +381,7 @@ fn sample_kind_from_subformat(
     subformat: GUID,
     bits_per_sample: u16,
 ) -> Result<SampleKind, AudioCaptureError> {
-    if subformat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT && bits_per_sample == 32 {
+    if subformat == KSDATAFORMAT_SUBTYPE_IEEE_FLOAT_GUID && bits_per_sample == 32 {
         return Ok(SampleKind::Float32);
     }
 

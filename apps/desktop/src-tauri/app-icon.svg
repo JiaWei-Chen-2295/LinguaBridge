@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <rect width="1024" height="1024" rx="176" fill="#172126" />
+  <rect x="112" y="112" width="800" height="800" rx="124" fill="#98f0c0" />
+  <text
+    x="512"
+    y="592"
+    fill="#172126"
+    font-family="Segoe UI, Arial, sans-serif"
+    font-size="340"
+    font-weight="800"
+    letter-spacing="0"
+    text-anchor="middle"
+  >LB</text>
+</svg>
