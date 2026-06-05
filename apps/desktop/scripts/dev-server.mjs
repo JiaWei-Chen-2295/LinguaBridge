@@ -1,4 +1,9 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const DEV_SERVER_URL = "http://127.0.0.1:1420";
 const HEALTH_TIMEOUT_MS = 1_500;
@@ -8,11 +13,10 @@ if (await hasHealthyDevServer()) {
   process.exit(0);
 }
 
-const command = process.platform === "win32" ? "npm.cmd" : "npm";
-const child = spawn(command, ["run", "dev:web"], {
-  cwd: process.cwd(),
-  stdio: "inherit",
-  shell: false
+const viteBin = findViteBin(packageRoot);
+const child = spawn(process.execPath, [viteBin], {
+  cwd: packageRoot,
+  stdio: "inherit"
 });
 
 const forwardSignal = (signal) => {
@@ -32,6 +36,26 @@ child.on("exit", (code, signal) => {
 
   process.exit(code ?? 0);
 });
+
+function findViteBin(startDir) {
+  let dir = startDir;
+
+  while (true) {
+    const candidate = path.join(dir, "node_modules", "vite", "bin", "vite.js");
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+
+    const parent = path.dirname(dir);
+    if (parent === dir) {
+      break;
+    }
+
+    dir = parent;
+  }
+
+  throw new Error("Could not find vite binary. Run npm install from the workspace root.");
+}
 
 async function hasHealthyDevServer() {
   const controller = new AbortController();
