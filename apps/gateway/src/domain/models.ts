@@ -88,6 +88,16 @@ export interface SegmentRevision {
   createdAt: Date;
 }
 
+export interface SessionAudioObject {
+  id: string;
+  sessionId: string;
+  objectKey: string;
+  format: string;
+  durationMs: number;
+  sizeBytes: number;
+  createdAt: Date;
+}
+
 export interface UsageEvent {
   id: string;
   userId: string;
@@ -127,6 +137,7 @@ export interface UsageSummary {
 
 export interface SessionSnapshot {
   session: RealtimeSession;
+  audioObjects: SessionAudioObject[];
   segments: SubtitleSegment[];
   revisions: SegmentRevision[];
   usageEvents: UsageEvent[];

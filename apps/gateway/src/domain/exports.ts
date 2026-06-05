@@ -106,6 +106,10 @@ export function renderJson(snapshot: SessionSnapshot): string {
   return JSON.stringify(
     {
       session: serializeSession(snapshot.session),
+      audioObjects: snapshot.audioObjects.map((audioObject) => ({
+        ...audioObject,
+        createdAt: audioObject.createdAt.toISOString()
+      })),
       segments: snapshot.segments.map((segment) => ({
         ...segment,
         updatedAt: segment.updatedAt.toISOString()

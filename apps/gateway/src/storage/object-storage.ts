@@ -8,6 +8,13 @@ export interface PutObjectInput {
   metadata?: Record<string, string>;
 }
 
+export interface PutFileInput {
+  key: string;
+  filePath: string;
+  contentType: string;
+  metadata?: Record<string, string>;
+}
+
 export interface PutObjectResult {
   key: string;
   sizeBytes: number;
@@ -21,6 +28,7 @@ export interface DeletePrefixResult {
 export interface ObjectStorage {
   ensureReady(): Promise<void>;
   putObject(input: PutObjectInput): Promise<PutObjectResult>;
+  putFile(input: PutFileInput): Promise<PutObjectResult>;
   deleteObject(key: string): Promise<void>;
   deletePrefix(prefix: string): Promise<DeletePrefixResult>;
   makeSessionPrefix(userId: string, sessionId: string): string;
@@ -52,6 +60,15 @@ class DisabledObjectStorage implements ObjectStorage {
     });
   }
 
+  public async putFile(input: PutFileInput): Promise<PutObjectResult> {
+    const { stat } = await import("node:fs/promises");
+    const fileStat = await stat(input.filePath);
+    return Promise.resolve({
+      key: this.withGlobalPrefix(input.key),
+      sizeBytes: fileStat.size
+    });
+  }
+
   public async deleteObject(_key: string): Promise<void> {
     return Promise.resolve();
   }
@@ -64,7 +81,7 @@ class DisabledObjectStorage implements ObjectStorage {
   }
 
   public makeSessionPrefix(userId: string, sessionId: string): string {
-    return this.withGlobalPrefix(sessionPrefix(userId, sessionId));
+    return sessionPrefix(userId, sessionId);
   }
 
   private withGlobalPrefix(key: string): string {
@@ -110,6 +127,18 @@ class MinioObjectStorage implements ObjectStorage {
     return { key, sizeBytes };
   }
 
+  public async putFile(input: PutFileInput): Promise<PutObjectResult> {
+    const key = this.withGlobalPrefix(input.key);
+    const { stat } = await import("node:fs/promises");
+    const fileStat = await stat(input.filePath);
+    await this.client.fPutObject(this.config.bucket, key, input.filePath, {
+      "Content-Type": input.contentType,
+      ...(input.metadata ?? {})
+    });
+
+    return { key, sizeBytes: fileStat.size };
+  }
+
   public async deleteObject(key: string): Promise<void> {
     await this.client.removeObject(this.config.bucket, this.withGlobalPrefix(key));
   }
@@ -128,7 +157,7 @@ class MinioObjectStorage implements ObjectStorage {
   }
 
   public makeSessionPrefix(userId: string, sessionId: string): string {
-    return this.withGlobalPrefix(sessionPrefix(userId, sessionId));
+    return sessionPrefix(userId, sessionId);
   }
 
   private async listKeys(prefix: string): Promise<string[]> {

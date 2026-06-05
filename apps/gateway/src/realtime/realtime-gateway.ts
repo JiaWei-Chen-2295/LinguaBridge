@@ -22,11 +22,13 @@ import type {
   InMemoryStore,
   ResolveSessionUserInput
 } from "../storage/in-memory-store";
+import type { SessionArtifactRecorder } from "../storage/session-artifact-recorder";
 import { parseRealtimeClientMessage } from "./ws-messages";
 
 export interface RealtimeGatewayDeps {
   config: GatewayConfig;
   store: InMemoryStore;
+  artifactRecorder: SessionArtifactRecorder;
 }
 
 export function registerRealtimeGateway(
@@ -61,6 +63,7 @@ class RealtimeConnection {
   private userId: string | undefined;
   private closed = false;
   private stoppedByClient = false;
+  private messageQueue: Promise<void> = Promise.resolve();
 
   public constructor(
     private readonly socket: WebSocket,
@@ -69,11 +72,20 @@ class RealtimeConnection {
   ) {
     this.sendReady();
     this.socket.on("message", (data) => {
-      void this.handleRawMessage(data);
+      this.messageQueue = this.messageQueue
+        .then(() => this.handleRawMessage(data))
+        .catch((error: unknown) => {
+          this.app.log.warn({ error }, "realtime message handling failed");
+        });
     });
     this.socket.on("close", () => {
       this.closed = true;
-      this.finalizeActiveSession("interrupted", true);
+      this.messageQueue = this.messageQueue
+        .then(() => this.finalizeActiveSession("interrupted", true))
+        .then(() => undefined)
+        .catch((error: unknown) => {
+          this.app.log.warn({ error }, "realtime close finalization failed");
+        });
     });
     this.socket.on("error", (error) => {
       this.app.log.warn({ error }, "realtime websocket error");
@@ -105,12 +117,12 @@ class RealtimeConnection {
     }
 
     if (message.type === "audio.frame") {
-      this.handleAudioFrame(message);
+      await this.handleAudioFrame(message);
       return;
     }
 
     if (message.type === "session.stop") {
-      this.handleStop(message);
+      await this.handleStop(message);
       return;
     }
 
@@ -170,6 +182,10 @@ class RealtimeConnection {
     });
     this.userId = resolved.user.id;
     this.sessionId = session.id;
+    await this.deps.artifactRecorder.startSession({
+      userId: resolved.user.id,
+      sessionId: session.id
+    });
 
     const event: SessionStartedEvent = {
       type: "session.started",
@@ -185,10 +201,16 @@ class RealtimeConnection {
     };
     this.sendEvent(event);
 
-    await this.pushMockSubtitleEvents(session.id, session.sourceLang, session.targetLang);
+    void this.pushMockSubtitleEvents(
+      session.id,
+      session.sourceLang,
+      session.targetLang
+    );
   }
 
-  private handleAudioFrame(message: RealtimeAudioFrameMessage): void {
+  private async handleAudioFrame(
+    message: RealtimeAudioFrameMessage
+  ): Promise<void> {
     if (this.sessionId === undefined || this.userId === undefined) {
       this.sendError(
         "session_not_found",
@@ -209,6 +231,14 @@ class RealtimeConnection {
       return;
     }
 
+    const storedFrame = await this.deps.artifactRecorder.appendAudioFrame({
+      sessionId: this.sessionId,
+      pcmBase64: message.payload.pcmBase64,
+      durationMs: message.payload.durationMs
+    });
+    const storedBytes =
+      storedFrame?.sizeBytes ?? estimateBase64DecodedBytes(message.payload.pcmBase64);
+
     this.deps.store.appendUsageEvent({
       userId: this.userId,
       sessionId: this.sessionId,
@@ -226,13 +256,15 @@ class RealtimeConnection {
       userId: this.userId,
       sessionId: this.sessionId,
       eventType: "oss_audio_storage",
-      amount: estimateBase64DecodedBytes(message.payload.pcmBase64),
+      amount: storedBytes,
       unit: "bytes",
       model: "local-dev-object-store"
     });
   }
 
-  private handleStop(message: RealtimeSessionStopMessage): void {
+  private async handleStop(
+    message: RealtimeSessionStopMessage
+  ): Promise<void> {
     if (this.sessionId === undefined) {
       this.sendError(
         "session_not_found",
@@ -254,7 +286,7 @@ class RealtimeConnection {
     }
 
     this.stoppedByClient = true;
-    const result = this.finalizeActiveSession("completed", false);
+    const result = await this.finalizeActiveSession("completed", false);
     if (result !== undefined) {
       const event: SessionStoppedEvent = {
         type: "session.stopped",
@@ -292,6 +324,7 @@ class RealtimeConnection {
 
       this.recordModelUsage(event);
       this.deps.store.recordSubtitleEvent(event);
+      await this.persistTranscriptSnapshot(event.payload.sessionId);
       this.sendEvent(event);
     }
   }
@@ -337,13 +370,13 @@ class RealtimeConnection {
   private finalizeActiveSession(
     status: "completed" | "interrupted",
     interrupted: boolean
-  ): ReturnType<InMemoryStore["finalizeSession"]> {
+  ): Promise<ReturnType<InMemoryStore["finalizeSession"]>> {
     if (this.sessionId === undefined || this.userId === undefined) {
-      return undefined;
+      return Promise.resolve(undefined);
     }
 
     if (interrupted && this.stoppedByClient) {
-      return undefined;
+      return Promise.resolve(undefined);
     }
 
     const result = this.deps.store.finalizeSession(this.sessionId, status);
@@ -358,7 +391,49 @@ class RealtimeConnection {
       });
     }
 
-    return result;
+    if (result !== undefined) {
+      return this.finalizeArtifacts(result).then(() => result);
+    }
+
+    return Promise.resolve(undefined);
+  }
+
+  private async finalizeArtifacts(
+    result: NonNullable<ReturnType<InMemoryStore["finalizeSession"]>>
+  ): Promise<void> {
+    const initialSnapshot = this.deps.store.getSessionSnapshot(result.session.id);
+    if (initialSnapshot === undefined) {
+      return;
+    }
+
+    const finalized = await this.deps.artifactRecorder.finalizeSession(
+      initialSnapshot
+    );
+    if (finalized.audioObject !== undefined) {
+      this.deps.store.recordSessionAudioObject({
+        sessionId: result.session.id,
+        objectKey: finalized.audioObject.objectKey,
+        format: finalized.audioObject.format,
+        durationMs: finalized.audioObject.durationMs,
+        sizeBytes: finalized.audioObject.sizeBytes
+      });
+      const snapshot = this.deps.store.getSessionSnapshot(result.session.id);
+      if (snapshot !== undefined) {
+        await this.deps.artifactRecorder.persistSessionDocuments(snapshot);
+      }
+      return;
+    }
+
+    await this.deps.artifactRecorder.persistSessionDocuments(initialSnapshot);
+  }
+
+  private async persistTranscriptSnapshot(sessionId: string): Promise<void> {
+    const snapshot = this.deps.store.getSessionSnapshot(sessionId);
+    if (snapshot === undefined) {
+      return;
+    }
+
+    await this.deps.artifactRecorder.persistTranscriptSnapshot(snapshot);
   }
 
   private sendReady(): void {
@@ -371,7 +446,7 @@ class RealtimeConnection {
           codec: "pcm_s16le",
           sampleRate: 16000,
           channels: 1,
-          frameDurationMs: 40
+          frameDurationMs: 20
         }
       }
     };

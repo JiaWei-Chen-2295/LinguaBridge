@@ -11,6 +11,7 @@ import {
   type InviteBatch,
   type RealtimeSession,
   type SegmentRevision,
+  type SessionAudioObject,
   type SessionSnapshot,
   type SessionStatus,
   type SubtitleSegment,
@@ -63,6 +64,19 @@ export interface FinalizeSessionResult {
   finalizedNow: boolean;
 }
 
+export interface RecordSessionAudioObjectInput {
+  sessionId: string;
+  objectKey: string;
+  format: string;
+  durationMs: number;
+  sizeBytes: number;
+}
+
+export interface DeleteSessionResult {
+  snapshot: SessionSnapshot;
+  anonymizedUsageEvents: number;
+}
+
 export class InMemoryStore {
   private readonly users = new Map<string, User>();
   private readonly usersByEmail = new Map<string, string>();
@@ -70,6 +84,7 @@ export class InMemoryStore {
   private readonly inviteBatches = new Map<string, InviteBatch>();
   private readonly invitesByHash = new Map<string, Invite>();
   private readonly sessions = new Map<string, RealtimeSession>();
+  private readonly audioObjects: SessionAudioObject[] = [];
   private readonly segments = new Map<string, SubtitleSegment>();
   private readonly revisions: SegmentRevision[] = [];
   private readonly usageEvents: UsageEvent[] = [];
@@ -230,6 +245,38 @@ export class InMemoryStore {
     });
   }
 
+  public recordSessionAudioObject(
+    input: RecordSessionAudioObjectInput
+  ): SessionAudioObject | undefined {
+    if (!this.sessions.has(input.sessionId)) {
+      return undefined;
+    }
+
+    const existing = this.audioObjects.find(
+      (audioObject) =>
+        audioObject.sessionId === input.sessionId &&
+        audioObject.objectKey === input.objectKey
+    );
+
+    if (existing !== undefined) {
+      existing.durationMs = input.durationMs;
+      existing.sizeBytes = input.sizeBytes;
+      return existing;
+    }
+
+    const audioObject: SessionAudioObject = {
+      id: createId("aud"),
+      sessionId: input.sessionId,
+      objectKey: input.objectKey,
+      format: input.format,
+      durationMs: input.durationMs,
+      sizeBytes: input.sizeBytes,
+      createdAt: new Date()
+    };
+    this.audioObjects.push(audioObject);
+    return audioObject;
+  }
+
   public appendUsageEvent(input: UsageEventInput): UsageEvent {
     const event: UsageEvent = {
       id: createId("use"),
@@ -301,6 +348,9 @@ export class InMemoryStore {
     const segments = Array.from(this.segments.values())
       .filter((segment) => segment.sessionId === sessionId)
       .sort((left, right) => left.startAtMs - right.startAtMs);
+    const audioObjects = this.audioObjects.filter(
+      (audioObject) => audioObject.sessionId === sessionId
+    );
     const revisions = this.revisions.filter(
       (revision) => revision.sessionId === sessionId
     );
@@ -308,7 +358,34 @@ export class InMemoryStore {
       (event) => event.sessionId === sessionId
     );
 
-    return { session, segments, revisions, usageEvents };
+    return { session, audioObjects, segments, revisions, usageEvents };
+  }
+
+  public deleteSession(sessionId: string): DeleteSessionResult | undefined {
+    const snapshot = this.getSessionSnapshot(sessionId);
+    if (snapshot === undefined) {
+      return undefined;
+    }
+
+    this.sessions.delete(sessionId);
+    for (const key of Array.from(this.segments.keys())) {
+      if (key.startsWith(`${sessionId}:`)) {
+        this.segments.delete(key);
+      }
+    }
+    removeMatching(this.audioObjects, (audioObject) => audioObject.sessionId === sessionId);
+    removeMatching(this.revisions, (revision) => revision.sessionId === sessionId);
+
+    let anonymizedUsageEvents = 0;
+    for (const usageEvent of this.usageEvents) {
+      if (usageEvent.sessionId === sessionId) {
+        delete usageEvent.sessionId;
+        usageEvent.metadata = { deletedSession: true };
+        anonymizedUsageEvents += 1;
+      }
+    }
+
+    return { snapshot, anonymizedUsageEvents };
   }
 
   private seedDevInvite(seed: StoreSeedConfig): void {
@@ -408,4 +485,16 @@ function sumUsage(
   return events
     .filter((event) => event.eventType === eventType)
     .reduce((total, event) => total + event.amount, 0);
+}
+
+function removeMatching<T>(
+  values: T[],
+  predicate: (value: T) => boolean
+): void {
+  for (let index = values.length - 1; index >= 0; index -= 1) {
+    const value = values[index];
+    if (value !== undefined && predicate(value)) {
+      values.splice(index, 1);
+    }
+  }
 }

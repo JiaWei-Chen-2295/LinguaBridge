@@ -14,11 +14,13 @@ import {
   createObjectStorage,
   type ObjectStorage
 } from "./storage/object-storage";
+import { SessionArtifactRecorder } from "./storage/session-artifact-recorder";
 
 export interface GatewayApp {
   app: FastifyInstance;
   store: InMemoryStore;
   objectStorage: ObjectStorage;
+  artifactRecorder: SessionArtifactRecorder;
   config: GatewayConfig;
 }
 
@@ -34,12 +36,13 @@ export async function buildGatewayApp(
   });
   const objectStorage = createObjectStorage(config);
   await objectStorage.ensureReady();
+  const artifactRecorder = new SessionArtifactRecorder(objectStorage);
 
   registerHealthRoutes(app, config);
   registerInviteRoutes(app, store);
   registerUsageRoutes(app, store);
   registerExportRoutes(app, store);
-  registerRealtimeGateway(app, { config, store });
+  registerRealtimeGateway(app, { config, store, artifactRecorder });
 
-  return { app, store, objectStorage, config };
+  return { app, store, objectStorage, artifactRecorder, config };
 }
