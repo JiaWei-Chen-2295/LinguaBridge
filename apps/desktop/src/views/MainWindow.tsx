@@ -143,7 +143,7 @@ export function MainWindow(): ReactElement {
 
         setDevices(nextDevices);
         setCaptureStatus(nextStatus);
-        setSelectedDeviceId(nextDevices.find((device) => device.isDefault)?.id ?? null);
+        setSelectedDeviceId(getDefaultAudioDeviceId(nextDevices));
       } catch (error) {
         if (!cancelled) {
           const commandError = toAudioCommandError(error);
@@ -282,6 +282,11 @@ export function MainWindow(): ReactElement {
     try {
       const nextDevices = await listAudioDevices();
       setDevices(nextDevices);
+      setSelectedDeviceId((currentDeviceId) =>
+        nextDevices.some((device) => device.id === currentDeviceId)
+          ? currentDeviceId
+          : getDefaultAudioDeviceId(nextDevices)
+      );
       setSessionMode((currentMode) => (currentMode === "error" ? "idle" : currentMode));
       setFeedback("音频设备列表已刷新。");
     } catch (error) {
@@ -663,6 +668,10 @@ function getRuntimeFeedbackMessage(message: string): string {
   }
 
   return message;
+}
+
+function getDefaultAudioDeviceId(devices: AudioDevice[]): string | null {
+  return devices.find((device) => device.isDefault)?.id ?? devices[0]?.id ?? null;
 }
 
 function SubtitlePreview({ segment }: { segment: SubtitleSegmentEvent }): ReactElement {

@@ -15,20 +15,21 @@ use super::types::{
 
 #[cfg(windows)]
 use windows::{
-    core::GUID,
+    core::{BSTR, GUID, PCWSTR},
     Win32::{
+        Devices::FunctionDiscovery::PKEY_Device_FriendlyName,
         Media::{
             Audio::{
-                eConsole, eRender, IAudioCaptureClient, IAudioClient, IMMDeviceEnumerator,
-                MMDeviceEnumerator, AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED,
-                AUDCLNT_STREAMFLAGS_LOOPBACK, WAVEFORMATEX, WAVEFORMATEXTENSIBLE,
-                WAVE_FORMAT_PCM,
+                eConsole, eRender, IAudioCaptureClient, IAudioClient, IMMDevice,
+                IMMDeviceEnumerator, MMDeviceEnumerator, AUDCLNT_BUFFERFLAGS_SILENT,
+                AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, DEVICE_STATE_ACTIVE,
+                WAVEFORMATEX, WAVEFORMATEXTENSIBLE, WAVE_FORMAT_PCM,
             },
             KernelStreaming::KSDATAFORMAT_SUBTYPE_PCM,
         },
         System::Com::{
             CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
-            COINIT_MULTITHREADED,
+            COINIT_MULTITHREADED, STGM_READ,
         },
     },
 };
@@ -51,15 +52,56 @@ static CAPTURE_THREAD: OnceLock<Mutex<Option<CaptureThread>>> = OnceLock::new();
 
 #[cfg(windows)]
 pub fn list_loopback_devices() -> Result<Vec<AudioDevice>, AudioCaptureError> {
-    Ok(vec![AudioDevice {
-        id: "default-output-loopback".to_string(),
-        name: "Default Windows output (WASAPI loopback)".to_string(),
-        kind: AudioDeviceKind::LoopbackOutput,
-        status: AudioDeviceStatus::Available,
-        is_default: true,
-        sample_rate_hz: Some(48_000),
-        channels: Some(2),
-    }])
+    match thread::spawn(list_loopback_devices_on_thread).join() {
+        Ok(result) => result,
+        Err(_) => Err(AudioCaptureError::new(
+            AudioCaptureErrorKind::Internal,
+            "WASAPI device enumeration thread panicked.",
+            true,
+        )),
+    }
+}
+
+#[cfg(windows)]
+fn list_loopback_devices_on_thread() -> Result<Vec<AudioDevice>, AudioCaptureError> {
+    let _com = ComApartment::initialize()?;
+    let enumerator = create_device_enumerator()?;
+    let default_device = unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole) }
+        .map_err(|error| windows_error(AudioCaptureErrorKind::DeviceUnavailable, error))?;
+    let default_device_id = device_id(&default_device)?;
+    let collection = unsafe { enumerator.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE) }
+        .map_err(|error| windows_error(AudioCaptureErrorKind::DeviceUnavailable, error))?;
+    let device_count = unsafe { collection.GetCount() }
+        .map_err(|error| windows_error(AudioCaptureErrorKind::DeviceUnavailable, error))?;
+    let mut devices = Vec::with_capacity(device_count as usize);
+
+    for index in 0..device_count {
+        let device = unsafe { collection.Item(index) }
+            .map_err(|error| windows_error(AudioCaptureErrorKind::DeviceUnavailable, error))?;
+        let id = device_id(&device)?;
+        let name = device_name(&device).unwrap_or_else(|| format!("Windows output {}", index + 1));
+        let (sample_rate_hz, channels) = device_mix_format(&device).unwrap_or((None, None));
+
+        devices.push(AudioDevice {
+            id: id.clone(),
+            name,
+            kind: AudioDeviceKind::LoopbackOutput,
+            status: AudioDeviceStatus::Available,
+            is_default: id == default_device_id,
+            sample_rate_hz,
+            channels,
+        });
+    }
+
+    if devices.is_empty() {
+        return Err(AudioCaptureError::new(
+            AudioCaptureErrorKind::DeviceUnavailable,
+            "No active Windows output devices are available for WASAPI loopback.",
+            true,
+        ));
+    }
+
+    Ok(devices)
 }
 
 #[cfg(not(windows))]
@@ -190,8 +232,7 @@ fn run_capture_loop(
 ) -> Result<(), AudioCaptureError> {
     let _com = ComApartment::initialize()?;
     let enumerator = create_device_enumerator()?;
-    let device = unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole) }
-        .map_err(|error| windows_error(AudioCaptureErrorKind::DeviceUnavailable, error))?;
+    let device = resolve_loopback_device(&enumerator, config.device_id.as_deref())?;
     let audio_client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None) }
         .map_err(|error| windows_error(AudioCaptureErrorKind::WasapiUnavailable, error))?;
     let mix_format_ptr = unsafe { audio_client.GetMixFormat() }
@@ -275,6 +316,83 @@ fn run_capture_loop(
 fn create_device_enumerator() -> Result<IMMDeviceEnumerator, AudioCaptureError> {
     unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
         .map_err(|error| windows_error(AudioCaptureErrorKind::WasapiUnavailable, error))
+}
+
+#[cfg(windows)]
+fn resolve_loopback_device(
+    enumerator: &IMMDeviceEnumerator,
+    device_id: Option<&str>,
+) -> Result<IMMDevice, AudioCaptureError> {
+    let Some(device_id) = device_id.filter(|value| !value.trim().is_empty()) else {
+        return unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole) }
+            .map_err(|error| windows_error(AudioCaptureErrorKind::DeviceUnavailable, error));
+    };
+
+    let mut wide_device_id: Vec<u16> = device_id.encode_utf16().collect();
+    wide_device_id.push(0);
+
+    unsafe { enumerator.GetDevice(PCWSTR::from_raw(wide_device_id.as_ptr())) }
+        .map_err(|error| windows_error(AudioCaptureErrorKind::DeviceUnavailable, error))
+}
+
+#[cfg(windows)]
+fn device_id(device: &IMMDevice) -> Result<String, AudioCaptureError> {
+    let id = unsafe { device.GetId() }
+        .map_err(|error| windows_error(AudioCaptureErrorKind::DeviceUnavailable, error))?;
+
+    if id.is_null() {
+        return Err(AudioCaptureError::new(
+            AudioCaptureErrorKind::DeviceUnavailable,
+            "WASAPI output device returned an empty device ID.",
+            true,
+        ));
+    }
+
+    let id_string = unsafe { id.to_string() }.map_err(|error| {
+        AudioCaptureError::new(
+            AudioCaptureErrorKind::DeviceUnavailable,
+            format!("WASAPI output device ID is not valid UTF-16: {error}"),
+            true,
+        )
+    })?;
+
+    unsafe {
+        CoTaskMemFree(Some(id.as_ptr().cast()));
+    }
+
+    Ok(id_string)
+}
+
+#[cfg(windows)]
+fn device_name(device: &IMMDevice) -> Option<String> {
+    let property_store = unsafe { device.OpenPropertyStore(STGM_READ) }.ok()?;
+    let value = unsafe { property_store.GetValue(&PKEY_Device_FriendlyName) }.ok()?;
+    let bstr = BSTR::try_from(&value).ok()?;
+    let name = String::try_from(&bstr).ok()?;
+    let trimmed_name = name.trim();
+
+    if trimmed_name.is_empty() {
+        None
+    } else {
+        Some(trimmed_name.to_string())
+    }
+}
+
+#[cfg(windows)]
+fn device_mix_format(
+    device: &IMMDevice,
+) -> Result<(Option<u32>, Option<u16>), AudioCaptureError> {
+    let audio_client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None) }
+        .map_err(|error| windows_error(AudioCaptureErrorKind::WasapiUnavailable, error))?;
+    let mix_format_ptr = unsafe { audio_client.GetMixFormat() }
+        .map_err(|error| windows_error(AudioCaptureErrorKind::WasapiUnavailable, error))?;
+    let mix_format = unsafe { read_mix_format(mix_format_ptr) };
+
+    unsafe {
+        CoTaskMemFree(Some(mix_format_ptr.cast()));
+    }
+
+    mix_format.map(|format| (Some(format.sample_rate), Some(format.channels)))
 }
 
 #[cfg(windows)]
