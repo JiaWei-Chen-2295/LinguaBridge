@@ -19,6 +19,7 @@ export interface GatewayConfig {
   mockSubtitleDelayMs: number;
   devInviteCode: string;
   devInviteQuotaMinutes: number;
+  databaseUrl?: string;
   databaseUrlConfigured: boolean;
   redisUrlConfigured: boolean;
   model: ModelConfig;
@@ -58,7 +59,7 @@ export interface LiveTranslateSpikeConfig {
   model: string;
 }
 
-export type ObjectStorageProvider = "disabled" | "minio";
+export type ObjectStorageProvider = "disabled" | "minio" | "oss";
 
 export interface ObjectStorageConfig {
   provider: ObjectStorageProvider;
@@ -77,7 +78,8 @@ export interface MinioConfig {
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = loadGatewayEnv()): GatewayConfig {
-  return {
+  const databaseUrl = readOptionalString(env, "DATABASE_URL");
+  const config: GatewayConfig = {
     host: readString(env, "HOST", "0.0.0.0"),
     port: readInteger(env, "PORT", 4318),
     logLevel: readLogLevel(env, "LOG_LEVEL", "info"),
@@ -86,11 +88,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = loadGatewayEnv()): GatewayCo
     mockSubtitleDelayMs: readInteger(env, "MOCK_SUBTITLE_DELAY_MS", 300),
     devInviteCode: readString(env, "DEV_INVITE_CODE", "ALPHA-DEV-2026"),
     devInviteQuotaMinutes: readInteger(env, "DEV_INVITE_QUOTA_MINUTES", 180),
-    databaseUrlConfigured: hasNonEmptyString(env.DATABASE_URL),
-    redisUrlConfigured: hasNonEmptyString(env.REDIS_URL),
+    databaseUrlConfigured: databaseUrl !== undefined,
+    redisUrlConfigured: false,
     model: readModelConfig(env),
     objectStorage: readObjectStorageConfig(env)
   };
+
+  if (databaseUrl !== undefined) {
+    config.databaseUrl = databaseUrl;
+  }
+
+  return config;
 }
 
 export function loadGatewayEnv(
@@ -246,21 +254,95 @@ function readModelConfig(env: NodeJS.ProcessEnv): ModelConfig {
 }
 
 function readObjectStorageConfig(env: NodeJS.ProcessEnv): ObjectStorageConfig {
+  const provider = readObjectStorageProvider(env, "OBJECT_STORAGE_PROVIDER", "disabled");
+  const endpoint = readStorageEndpointConfig(env, provider);
+
   return {
-    provider: readObjectStorageProvider(env, "OBJECT_STORAGE_PROVIDER", "disabled"),
+    provider,
     bucket: readString(env, "OBJECT_STORAGE_BUCKET", "lingua-bridge-dev"),
     region: readString(env, "OBJECT_STORAGE_REGION", "us-east-1"),
     objectPrefix: normalizeObjectPrefix(
       readString(env, "OBJECT_STORAGE_PREFIX", "")
     ),
     minio: {
-      endPoint: readString(env, "MINIO_ENDPOINT", "127.0.0.1"),
-      port: readInteger(env, "MINIO_PORT", 9000),
-      useSSL: readBoolean(env, "MINIO_USE_SSL", false),
-      accessKey: readString(env, "MINIO_ACCESS_KEY", "lingua_bridge_minio"),
-      secretKey: readString(env, "MINIO_SECRET_KEY", "lingua_bridge_minio_dev")
+      endPoint: endpoint.endPoint,
+      port: endpoint.port,
+      useSSL: endpoint.useSSL,
+      accessKey: readString(
+        env,
+        "OSS_ACCESS_KEY",
+        readString(env, "MINIO_ACCESS_KEY", "admin")
+      ),
+      secretKey: readString(
+        env,
+        "OSS_SECRET_KEY",
+        readString(env, "MINIO_SECRET_KEY", "password")
+      )
     }
   };
+}
+
+function readStorageEndpointConfig(
+  env: NodeJS.ProcessEnv,
+  provider: ObjectStorageProvider
+): {
+  endPoint: string;
+  port: number;
+  useSSL: boolean;
+} {
+  const rawEndpoint = readString(
+    env,
+    "OSS_ENDPOINT",
+    readString(env, "MINIO_ENDPOINT", "127.0.0.1:9000")
+  );
+  const parsed = parseStorageEndpoint(rawEndpoint);
+  const useSSL = readBoolean(
+    env,
+    "OSS_USE_SSL",
+    readBoolean(
+      env,
+      "MINIO_SECURE",
+      readBoolean(env, "MINIO_USE_SSL", parsed.useSSL ?? provider === "oss")
+    )
+  );
+
+  return {
+    endPoint: parsed.endPoint,
+    port: readInteger(
+      env,
+      "OSS_PORT",
+      readInteger(env, "MINIO_PORT", parsed.port ?? (useSSL ? 443 : 9000))
+    ),
+    useSSL
+  };
+}
+
+function parseStorageEndpoint(value: string): {
+  endPoint: string;
+  port?: number;
+  useSSL?: boolean;
+} {
+  const trimmed = value.trim();
+  const hasProtocol = /^[a-z][a-z0-9+.-]*:\/\//iu.test(trimmed);
+  const withProtocol = hasProtocol ? trimmed : `http://${trimmed}`;
+
+  try {
+    const url = new URL(withProtocol);
+    const parsed: { endPoint: string; port?: number; useSSL?: boolean } = {
+      endPoint: url.hostname
+    };
+    if (url.port.length > 0) {
+      parsed.port = Number.parseInt(url.port, 10);
+    }
+    if (hasProtocol) {
+      parsed.useSSL = url.protocol === "https:";
+    }
+    return parsed;
+  } catch {
+    return {
+      endPoint: trimmed
+    };
+  }
 }
 
 function readString(
@@ -432,7 +514,7 @@ function readObjectStorageProvider(
     return fallback;
   }
 
-  return raw === "minio" || raw === "disabled" ? raw : fallback;
+  return raw === "minio" || raw === "oss" || raw === "disabled" ? raw : fallback;
 }
 
 function normalizeObjectPrefix(value: string): string {

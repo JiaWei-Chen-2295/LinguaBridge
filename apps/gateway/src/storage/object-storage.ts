@@ -39,7 +39,10 @@ interface ListedObject {
 }
 
 export function createObjectStorage(config: GatewayConfig): ObjectStorage {
-  if (config.objectStorage.provider === "minio") {
+  if (
+    config.objectStorage.provider === "minio" ||
+    config.objectStorage.provider === "oss"
+  ) {
     return new MinioObjectStorage(config.objectStorage);
   }
 

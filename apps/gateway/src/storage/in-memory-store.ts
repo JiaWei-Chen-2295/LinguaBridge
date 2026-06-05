@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import type {
-  DeviceInfo,
   SubtitleSegmentStatus,
   SubtitleSegmentUpdatedEvent
 } from "@lingua-bridge/protocol";
@@ -20,64 +19,20 @@ import {
   type UsageSummary,
   type User
 } from "../domain/models";
+import type {
+  ActivateInviteInput,
+  ActivateInviteResult,
+  CreateSessionInput,
+  DeleteSessionResult,
+  FinalizeSessionResult,
+  GatewayStore,
+  RecordSessionAudioObjectInput,
+  ResolveSessionUserInput,
+  ResolveSessionUserResult,
+  StoreSeedConfig
+} from "./store";
 
-export interface StoreSeedConfig {
-  devInviteCode: string;
-  devInviteQuotaMinutes: number;
-}
-
-export interface ActivateInviteInput {
-  code: string;
-  email?: string;
-  phone?: string;
-}
-
-export type StoreErrorCode =
-  | "invite_not_found"
-  | "invite_expired"
-  | "invite_already_used"
-  | "user_not_found"
-  | "session_not_found";
-
-export type ActivateInviteResult =
-  | { ok: true; user: User; invite: Invite; usage: UsageSummary }
-  | { ok: false; code: StoreErrorCode; message: string };
-
-export interface ResolveSessionUserInput {
-  inviteCode?: string;
-  userId?: string;
-}
-
-export type ResolveSessionUserResult =
-  | { ok: true; user: User }
-  | { ok: false; code: StoreErrorCode; message: string };
-
-export interface CreateSessionInput {
-  userId: string;
-  sourceLang: string;
-  targetLang: string;
-  device?: DeviceInfo;
-}
-
-export interface FinalizeSessionResult {
-  session: RealtimeSession;
-  finalizedNow: boolean;
-}
-
-export interface RecordSessionAudioObjectInput {
-  sessionId: string;
-  objectKey: string;
-  format: string;
-  durationMs: number;
-  sizeBytes: number;
-}
-
-export interface DeleteSessionResult {
-  snapshot: SessionSnapshot;
-  anonymizedUsageEvents: number;
-}
-
-export class InMemoryStore {
+export class InMemoryStore implements GatewayStore {
   private readonly users = new Map<string, User>();
   private readonly usersByEmail = new Map<string, string>();
   private readonly usersByPhone = new Map<string, string>();
@@ -489,7 +444,7 @@ export function createInMemoryStore(seed: StoreSeedConfig): InMemoryStore {
   return new InMemoryStore(seed);
 }
 
-function hashInviteCode(code: string): string {
+export function hashInviteCode(code: string): string {
   return createHash("sha256").update(code.trim()).digest("hex");
 }
 
@@ -497,7 +452,7 @@ function makeSegmentKey(sessionId: string, segmentId: string): string {
   return `${sessionId}:${segmentId}`;
 }
 
-function revisionReasonFor(status: SubtitleSegmentStatus): string {
+export function revisionReasonFor(status: SubtitleSegmentStatus): string {
   if (status === "draft") {
     return "Initial realtime ASR/MT draft.";
   }

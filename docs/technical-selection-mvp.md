@@ -18,7 +18,7 @@ MVP 推荐技术栈：
 | 模型链路 | 阿里云 ASR + Qwen-MT 为主，LiveTranslate 做 Spike | 先保证术语、纠错和可控性；LiveTranslate 用于验证低延迟同传链路。 |
 | 数据库 | PostgreSQL | 存用户、邀请码、会话、字幕分段、用量事件和术语表。 |
 | 对象存储 | 阿里云 OSS | 存音频文件、导出文件、后续解析产物。 |
-| 缓存/限流 | Redis / 阿里云 Tair | 管在线会话、邀请码额度、限流和短期状态。 |
+| 缓存/限流 | Redis / 阿里云 Tair（**MVP Alpha 跳过**） | 长期方案：在线会话、限流和短期状态；Alpha 为快速出功能，不做限流与 Redis，见 [实现说明](./notes-mvp-implementation.md)。 |
 | 日志监控 | 阿里云 SLS + 应用指标 | 跟踪延迟、错误、模型成本、音频中断。 |
 | 部署 | Alpha 阶段 ECS + Docker Compose；后续 ACK | Alpha 先降低运维复杂度，付费验证后再容器编排扩展。 |
 
@@ -273,7 +273,7 @@ MVP 默认保留 30 天。删除会话时需要删除：
 - Alibaba Cloud ECS
 - Docker Compose
 - PostgreSQL: 阿里云 RDS PostgreSQL
-- Redis: 阿里云 Tair 或 ECS 自建 Redis
+- Redis: 阿里云 Tair 或 ECS 自建 Redis（**MVP Alpha 跳过，不部署、不接入 Gateway**）
 - Object Storage: OSS
 - Logs: SLS
 - HTTPS: SLB/Nginx + TLS
@@ -329,8 +329,16 @@ Tauri v2 + React + TypeScript
 Rust WASAPI loopback audio core
 TypeScript Fastify Realtime Gateway
 Alibaba Cloud ASR + Qwen-MT, LiveTranslate Spike
-PostgreSQL + OSS + Redis/Tair + SLS
+PostgreSQL + OSS + SLS
 ECS + Docker Compose for Alpha
+```
+
+Alpha 快速闭环阶段实际先落地：
+
+```text
+PostgreSQL + OSS
+ECS + Docker Compose for Alpha
+Redis/Tair 后置到限流、在线会话和短期状态阶段
 ```
 
 这个方案的核心取舍是：**把底层音频和实时链路做稳，把商业验证需要的邀请码、用量、落盘和成本统计从第一版纳入，而不是先做看起来完整但不可计费、不可回溯的 Demo。**

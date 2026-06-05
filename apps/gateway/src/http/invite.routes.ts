@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import type { ActivateInviteInput, InMemoryStore } from "../storage/in-memory-store";
+import type { ActivateInviteInput, GatewayStore } from "../storage/store";
 import { isRecord, optionalString, requiredString } from "./validation";
 
 interface ActivateInviteResponse {
@@ -11,7 +11,7 @@ interface ActivateInviteResponse {
 
 export function registerInviteRoutes(
   app: FastifyInstance,
-  store: InMemoryStore
+  store: GatewayStore
 ): void {
   app.post<{ Body: unknown }>("/invites/activate", async (request, reply) => {
     const input = parseActivateInviteInput(request.body);
@@ -22,7 +22,7 @@ export function registerInviteRoutes(
       });
     }
 
-    const result = store.activateInvite(input);
+    const result = await store.activateInvite(input);
     if (!result.ok) {
       return reply.code(result.code === "invite_already_used" ? 409 : 400).send({
         error: result.code,

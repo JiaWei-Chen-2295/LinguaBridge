@@ -1,14 +1,14 @@
 import type { FastifyInstance } from "fastify";
-import type { InMemoryStore } from "../storage/in-memory-store";
 import type { ObjectStorage } from "../storage/object-storage";
 import type { SessionArtifactRecorder } from "../storage/session-artifact-recorder";
+import type { GatewayStore } from "../storage/store";
 
 interface SessionParams {
   sessionId: string;
 }
 
 export interface SessionRoutesDeps {
-  store: InMemoryStore;
+  store: GatewayStore;
   objectStorage: ObjectStorage;
   artifactRecorder: SessionArtifactRecorder;
 }
@@ -20,7 +20,7 @@ export function registerSessionRoutes(
   app.delete<{ Params: SessionParams }>(
     "/sessions/:sessionId",
     async (request, reply) => {
-      const snapshot = deps.store.getSessionSnapshot(request.params.sessionId);
+      const snapshot = await deps.store.getSessionSnapshot(request.params.sessionId);
       if (snapshot === undefined) {
         return reply.code(404).send({
           error: "session_not_found",
@@ -41,7 +41,7 @@ export function registerSessionRoutes(
       );
       const deletedObjects = await deps.objectStorage.deletePrefix(sessionPrefix);
       await deps.artifactRecorder.deleteLocalTemp(snapshot.session.id);
-      const deleted = deps.store.deleteSession(snapshot.session.id);
+      const deleted = await deps.store.deleteSession(snapshot.session.id);
 
       return {
         sessionId: snapshot.session.id,
