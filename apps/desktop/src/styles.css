@@ -122,6 +122,14 @@ button {
   gap: 16px;
 }
 
+.workspace-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .workspace-header h1 {
   margin: 0;
   font-size: 32px;

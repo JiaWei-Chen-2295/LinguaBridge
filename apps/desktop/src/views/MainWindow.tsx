@@ -12,6 +12,7 @@ import {
   KeyRound,
   Languages,
   ListChecks,
+  MonitorUp,
   RefreshCw,
   ShieldCheck,
   SlidersHorizontal,
@@ -34,6 +35,11 @@ import {
   stopAudioCapture,
   toAudioCommandError
 } from "../services/audioCommands";
+import {
+  hideOverlayWindow,
+  isOverlayWindowVisible,
+  showOverlayWindow
+} from "../services/overlayWindow";
 import { RealtimeGatewayConnection } from "../services/realtimeGateway";
 import type { AudioCaptureStatus, AudioCommandError, AudioDevice } from "../types/audio";
 import type { SubtitleSegmentEvent } from "../types/protocol";
@@ -54,6 +60,7 @@ export function MainWindow(): ReactElement {
   const [captureStatus, setCaptureStatus] = useState<AudioCaptureStatus | null>(null);
   const [sessionMode, setSessionMode] = useState<SessionMode>("idle");
   const [feedback, setFeedback] = useState<string | null>(null);
+  const [overlayVisible, setOverlayVisible] = useState(true);
   const [liveSubtitleSegments, setLiveSubtitleSegments] = useState<SubtitleSegmentEvent[]>([]);
   const realtimeConnectionRef = useRef<RealtimeGatewayConnection | null>(null);
   const audioFrameUnlistenRef = useRef<(() => void) | null>(null);
@@ -136,6 +143,7 @@ export function MainWindow(): ReactElement {
           listAudioDevices(),
           getAudioCaptureStatus()
         ]);
+        const nextOverlayVisible = await isOverlayWindowVisible().catch(() => true);
 
         if (cancelled) {
           return;
@@ -143,6 +151,7 @@ export function MainWindow(): ReactElement {
 
         setDevices(nextDevices);
         setCaptureStatus(nextStatus);
+        setOverlayVisible(nextOverlayVisible);
         setSelectedDeviceId(getDefaultAudioDeviceId(nextDevices));
       } catch (error) {
         if (!cancelled) {
@@ -280,8 +289,12 @@ export function MainWindow(): ReactElement {
 
   async function refreshDevices(): Promise<void> {
     try {
-      const nextDevices = await listAudioDevices();
+      const [nextDevices, nextOverlayVisible] = await Promise.all([
+        listAudioDevices(),
+        isOverlayWindowVisible().catch(() => overlayVisible)
+      ]);
       setDevices(nextDevices);
+      setOverlayVisible(nextOverlayVisible);
       setSelectedDeviceId((currentDeviceId) =>
         nextDevices.some((device) => device.id === currentDeviceId)
           ? currentDeviceId
@@ -292,6 +305,28 @@ export function MainWindow(): ReactElement {
     } catch (error) {
       const commandError = toAudioCommandError(error);
       setFeedback(getAudioFeedbackMessage(commandError));
+    }
+  }
+
+  async function toggleOverlayWindow(): Promise<void> {
+    try {
+      if (overlayVisible) {
+        await hideOverlayWindow();
+        setOverlayVisible(false);
+        setFeedback("悬浮字幕窗已隐藏，可在主界面重新打开。");
+        return;
+      }
+
+      await showOverlayWindow();
+      setOverlayVisible(true);
+      setFeedback("悬浮字幕窗已显示。");
+    } catch (error) {
+      const commandError = toAudioCommandError(error);
+      setFeedback(
+        error instanceof Error
+          ? getRuntimeFeedbackMessage(error.message)
+          : getAudioFeedbackMessage(commandError)
+      );
     }
   }
 
@@ -356,7 +391,13 @@ export function MainWindow(): ReactElement {
             <h1>实时字幕伴学</h1>
             <p>按顺序完成准入、授权和音频源设置，即可把 Windows 系统声音推给 Gateway。</p>
           </div>
-          <SessionStatus mode={sessionMode} captureStatus={captureStatus} />
+          <div className="workspace-header-actions">
+            <button className="action-button" onClick={() => void toggleOverlayWindow()}>
+              <MonitorUp size={18} aria-hidden="true" />
+              {overlayVisible ? "隐藏悬浮窗" : "打开悬浮窗"}
+            </button>
+            <SessionStatus mode={sessionMode} captureStatus={captureStatus} />
+          </div>
         </header>
 
         <section className="session-guide" aria-label="Session controls">

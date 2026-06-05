@@ -1,6 +1,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   CircleDot,
+  CircleX,
   Eye,
   EyeOff,
   GripHorizontal,
@@ -172,6 +173,14 @@ export function OverlayWindow(): ReactElement {
     }
   }
 
+  async function handleHideOverlay(): Promise<void> {
+    try {
+      await getCurrentWindow().hide();
+    } catch (error) {
+      setAudioFeedback(getOverlayRuntimeFeedback(error));
+    }
+  }
+
   return (
     <main className="overlay-shell" style={{ opacity: opacity / 100 }}>
       {showChrome ? (
@@ -220,6 +229,7 @@ export function OverlayWindow(): ReactElement {
               label={locked ? "解锁浮窗" : "锁定浮窗"}
               onClick={() => setLocked((value) => !value)}
             />
+            <IconButton icon={CircleX} label="隐藏悬浮窗" onClick={() => void handleHideOverlay()} />
             <IconButton icon={EyeOff} label="隐藏浮窗控制条" onClick={() => setShowChrome(false)} />
           </div>
         </header>
