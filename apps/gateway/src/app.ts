@@ -4,6 +4,7 @@ import { loadConfig } from "./config";
 import { registerExportRoutes } from "./http/export.routes";
 import { registerHealthRoutes } from "./http/health.routes";
 import { registerInviteRoutes } from "./http/invite.routes";
+import { registerSessionRoutes } from "./http/session.routes";
 import { registerUsageRoutes } from "./http/usage.routes";
 import { registerRealtimeGateway } from "./realtime/realtime-gateway";
 import {
@@ -42,6 +43,7 @@ export async function buildGatewayApp(
   registerInviteRoutes(app, store);
   registerUsageRoutes(app, store);
   registerExportRoutes(app, store);
+  registerSessionRoutes(app, { store, objectStorage, artifactRecorder });
   registerRealtimeGateway(app, { config, store, artifactRecorder });
 
   return { app, store, objectStorage, artifactRecorder, config };
