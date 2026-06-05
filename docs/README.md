@@ -8,6 +8,7 @@
 | --- | --- |
 | [MVP PRD: PC 端 AI 实时字幕与翻译伴学工具](./prd-mvp-ai-realtime-subtitle.md) | 产品定位、MVP 范围、用户场景、功能优先级、指标、风险和里程碑。 |
 | [MVP 技术选型](./technical-selection-mvp.md) | 桌面端、音频采集、后端网关、阿里云模型链路、存储、邀请码和用量统计的技术方案。 |
+| [MVP 实现说明](./notes-mvp-implementation.md) | 当前代码骨架、开发入口、实现假设和 Phase 0 待验证事项。 |
 
 ## 阅读顺序
 
