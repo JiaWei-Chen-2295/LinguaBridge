@@ -6,25 +6,35 @@
 
 ## 1. 当前实现目标
 
-本阶段先落地可运行的 MVP 骨架，用于承接 Phase 0 Spike 和 Phase 1 Alpha：
+本阶段优先**快速打通端到端功能**（采集 → 实时字幕 → 落盘 → 导出），运维与风控能力后置。
+
+先落地可运行的 MVP 骨架，用于承接 Phase 0 Spike 和 Phase 1 Alpha：
 
 - `packages/protocol`：客户端和网关共享的字幕、会话、用量、邀请码协议类型。
 - `apps/gateway`：Realtime Gateway，提供 HTTP API 和 WebSocket 实时字幕通道。
 - `apps/desktop`：Tauri v2 + React 桌面客户端，包含主窗口和字幕浮窗。
 - `packages/mock-models`：本地 mock ASR/MT/纠错链路，用于无阿里云凭证时验证实时状态机。
-- `infra`：Alpha 本地开发所需 PostgreSQL/Redis 基础配置。
+- `infra`：Alpha 本地开发所需 PostgreSQL 与 MinIO 对象存储基础配置；Gateway 当前不接入 Redis。
 
 ## 2. 明确假设
 
 - 当前版本默认使用 mock model provider；设置 `MODEL_PROVIDER=alibaba-cloud` 后，Gateway 会接阿里云实时 ASR + Qwen-MT。客户端仍不保存云服务密钥。
 - Windows WASAPI loopback 已接真实采集路径，输出 16 kHz mono PCM16 帧，并对默认输出设备切换给出可恢复错误提示。
-- 本地开发可使用内存存储验证邀请码、用量和会话；PostgreSQL/OSS 删除闭环会在 Alpha 数据层实现时补齐。
+- Gateway 配置 `DATABASE_URL` 时使用 PostgreSQL 持久化邀请码、会话、字幕分段、修订、音频对象索引和用量事件；未配置时仅保留内存存储作为本地降级。
+- 会话结束时上传 `audio.pcm`、`segments.json` 和 `exports/*` 到 MinIO/OSS-compatible 对象存储；删除会话时先删除对象存储前缀，再清理 PostgreSQL 会话、分段、修订和音频对象索引。
 - 数据保留策略维持 PRD 确认的默认 30 天，不新增关闭云端保存开关。
+- **Alpha 简化范围（为提速，本阶段不做）**：
+  - Redis / Tair：不接入；本地 `docker-compose` 不启动 Redis。
+  - 限流、并发控制、邀请码额度拦截（`quota_exhausted`）、在线会话分布式缓存。
+  - 后台成本统计、批次分析、SLS 监控等运营能力。
+- **Alpha 仍要做**：邀请码准入（可简化）、实时字幕链路、会话落盘、导出、基础用量记录（已按 append-only 事件写入但不阻断会话）。
+- 在线会话状态由 Gateway 进程内管理；持久化以 PostgreSQL + 对象存储为主。实现任务不要为上述「不做」项增加复杂度。
 
 ## 3. 开发入口
 
 ```bash
 npm install
+docker compose -f infra/docker-compose.yml up -d postgres minio
 npm run typecheck
 npm run build
 npm run dev:gateway
@@ -36,7 +46,17 @@ npm run dev:desktop:web
 - `npm run dev:desktop:web`：只启动前端 Vite 预览，不会弹出桌面窗口。
 - 真实桌面客户端仍需要 Tauri v2 系统依赖、Rust 工具链和 Windows WebView2；当前仓库根脚本会在 Windows 上优先使用 GNU Rust toolchain 启动桌面端。
 
-## 4. Phase 0 待验证
+## 4. PostgreSQL + MinIO 持久化验证
+
+1. 启动基础依赖：`docker compose -f infra/docker-compose.yml up -d postgres minio`。
+2. 确认 `.env` 或 `apps/gateway/.env` 中有 `DATABASE_URL=postgresql://lingua_bridge:lingua_bridge_dev@127.0.0.1:5432/lingua_bridge`，并保持 `OBJECT_STORAGE_PROVIDER=minio`。本地 MinIO 使用 `MINIO_ENDPOINT=localhost:9000`、`MINIO_ACCESS_KEY=admin`、`MINIO_SECRET_KEY=password`、`MINIO_SECURE=false`。
+3. 启动 Gateway：`npm run dev:gateway`。`/health` 应返回 `databaseConfigured: true`、`redisConfigured: false`。
+4. 激活邀请码：`POST /invites/activate`，body 至少包含 `{"code":"ALPHA-DEV-2026"}`。
+5. 通过桌面端或 WebSocket 测试脚本发起 `session.start`、若干 `audio.frame`、`session.stop`。停止后应在 PostgreSQL 看到 `realtime_sessions`、`subtitle_segments`、`segment_revisions`、`usage_events`、`session_audio_objects` 记录。
+6. 在 MinIO bucket `lingua-bridge-dev` 中应看到 `users/{userId}/sessions/{sessionId}/audio.pcm`、`segments.json` 和 `exports/transcript.md|subtitle.srt|session.json`。
+7. 调用 `DELETE /sessions/{sessionId}` 后，对象存储对应前缀应被删除，PostgreSQL 中该会话的 session/segments/revisions/audio object 索引被清理；用量事件保留并去掉 `session_id`，标记 `deletedSession`。
+
+## 5. Phase 0 待验证
 
 - Windows WASAPI loopback：默认输出设备、蓝牙耳机切换、空音频、采样率转换。当前实现可采集并检测默认输出切换，仍需设备矩阵实测。
 - 字幕浮窗：置顶、多显示器、DPI 缩放、锁定和透明度。当前浮窗不再读取 `mockData`，只展示主窗口同步来的实时字幕。
@@ -45,7 +65,7 @@ npm run dev:desktop:web
 - 会话落盘：音频、字幕、修订历史、导出文件、删除路径。
 - 邀请码和用量：激活、额度、append-only usage events、后台成本口径。
 
-## 5. WASAPI loopback 手工验证
+## 6. WASAPI loopback 手工验证
 
 目标：确认桌面端能从系统默认输出捕获浏览器、播放器和会议软件音频，并在默认输出设备切换时给出 `deviceSwitchRequired`。
 
@@ -57,7 +77,7 @@ npm run dev:desktop:web
 
 当前限制：Phase 0 只检测并提示默认输出切换，不做自动重连；如果用户显式选择了非默认输出设备，切换默认输出不会中断该显式设备的捕获。
 
-## 6. 字幕浮窗手工验证
+## 7. 字幕浮窗手工验证
 
 目标：确认 `subtitle-overlay` 由主窗口实时字幕状态驱动，且窗口交互满足 Phase 0 验证项。
 
@@ -67,7 +87,7 @@ npm run dev:desktop:web
 4. 验证浮窗置顶、拖动、锁定、隐藏控制条、单行/双行、字号和透明度。锁定后拖动手柄不应移动窗口。
 5. 在 100%/150% DPI 和多显示器间移动浮窗，确认文字不重叠、窗口可继续拖动，主窗口新字幕仍能同步到浮窗。
 
-## 7. Gateway 模型链路验证
+## 8. Gateway 模型链路验证
 
 ### 本地 mock 链路
 

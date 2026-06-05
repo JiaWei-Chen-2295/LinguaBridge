@@ -15,11 +15,13 @@ import type {
   SubtitleSegmentUpdatedEvent
 } from "@lingua-bridge/protocol";
 import type { GatewayConfig } from "../config";
-import type {
-  InMemoryStore,
-  ResolveSessionUserInput
-} from "../storage/in-memory-store";
+import type { UsageEventInput } from "../domain/models";
 import type { SessionArtifactRecorder } from "../storage/session-artifact-recorder";
+import type {
+  FinalizeSessionResult,
+  GatewayStore,
+  ResolveSessionUserInput
+} from "../storage/store";
 import {
   createRealtimeModelSession,
   getRealtimeModelProviderIssue,
@@ -30,7 +32,7 @@ import { parseRealtimeClientMessage } from "./ws-messages";
 
 export interface RealtimeGatewayDeps {
   config: GatewayConfig;
-  store: InMemoryStore;
+  store: GatewayStore;
   artifactRecorder: SessionArtifactRecorder;
 }
 
@@ -185,7 +187,7 @@ class RealtimeConnection {
     }
     resolveInput.inviteCode = message.payload.inviteCode;
 
-    const resolved = this.deps.store.resolveSessionUser(resolveInput);
+    const resolved = await this.deps.store.resolveSessionUser(resolveInput);
     if (!resolved.ok) {
       this.sendError(
         "invite_required",
@@ -196,7 +198,7 @@ class RealtimeConnection {
       return;
     }
 
-    const session = this.deps.store.createSession({
+    const session = await this.deps.store.createSession({
       userId: resolved.user.id,
       sourceLang: message.payload.language.sourceLang,
       targetLang: message.payload.language.targetLang,
@@ -247,7 +249,8 @@ class RealtimeConnection {
         userId: resolved.user.id,
         startedAt: session.startedAt.toISOString(),
         quotaRemainingMs: Math.round(
-          this.deps.store.getUsageSummary(resolved.user.id).remainingMinutes * 60_000
+          (await this.deps.store.getUsageSummary(resolved.user.id))
+            .remainingMinutes * 60_000
         )
       }
     };
@@ -285,7 +288,7 @@ class RealtimeConnection {
     const storedBytes =
       storedFrame?.sizeBytes ?? estimateBase64DecodedBytes(message.payload.pcmBase64);
 
-    this.deps.store.appendUsageEvent({
+    this.recordUsageEvent({
       userId: this.userId,
       sessionId: this.sessionId,
       eventType: "asr_audio_duration",
@@ -298,7 +301,7 @@ class RealtimeConnection {
         channels: message.payload.channels
       }
     });
-    this.deps.store.appendUsageEvent({
+    this.recordUsageEvent({
       userId: this.userId,
       sessionId: this.sessionId,
       eventType: "oss_audio_storage",
@@ -378,7 +381,7 @@ class RealtimeConnection {
     }
 
     this.recordModelUsage(event);
-    this.deps.store.recordSubtitleEvent(event);
+    await this.deps.store.recordSubtitleEvent(event);
     await this.persistTranscriptSnapshot(event.payload.sessionId);
     this.sendEvent(event);
   }
@@ -389,7 +392,7 @@ class RealtimeConnection {
     }
 
     if (event.payload.status === "final" || event.payload.status === "revised") {
-      this.deps.store.appendUsageEvent({
+      this.recordUsageEvent({
         userId: this.userId,
         sessionId: event.payload.sessionId,
         eventType: "mt_input_tokens",
@@ -397,7 +400,7 @@ class RealtimeConnection {
         unit: "tokens",
         model: event.payload.modelTrace.mtModel
       });
-      this.deps.store.appendUsageEvent({
+      this.recordUsageEvent({
         userId: this.userId,
         sessionId: event.payload.sessionId,
         eventType: "mt_output_tokens",
@@ -408,7 +411,7 @@ class RealtimeConnection {
     }
 
     if (event.payload.status === "revised") {
-      this.deps.store.appendUsageEvent({
+      this.recordUsageEvent({
         userId: this.userId,
         sessionId: event.payload.sessionId,
         eventType: "revision_tokens",
@@ -421,23 +424,23 @@ class RealtimeConnection {
     }
   }
 
-  private finalizeActiveSession(
+  private async finalizeActiveSession(
     status: "completed" | "interrupted",
     interrupted: boolean
-  ): Promise<ReturnType<InMemoryStore["finalizeSession"]>> {
+  ): Promise<FinalizeSessionResult | undefined> {
     if (this.sessionId === undefined || this.userId === undefined) {
-      return Promise.resolve(undefined);
+      return undefined;
     }
 
     if (interrupted && this.stoppedByClient) {
-      return Promise.resolve(undefined);
+      return undefined;
     }
 
-    const result = this.deps.store.finalizeSession(this.sessionId, status);
+    const result = await this.deps.store.finalizeSession(this.sessionId, status);
     const activeModelSession = this.modelSession;
     this.modelSession = undefined;
     if (result !== undefined && result.finalizedNow && interrupted) {
-      this.deps.store.appendUsageEvent({
+      this.recordUsageEvent({
         userId: this.userId,
         sessionId: this.sessionId,
         eventType: "session_interruption",
@@ -448,24 +451,20 @@ class RealtimeConnection {
     }
 
     if (result !== undefined) {
-      return Promise.resolve(activeModelSession?.stop())
-        .catch((error: unknown) => {
-          this.app.log.warn({ error }, "realtime model session stop failed");
-        })
-        .then(() => this.finalizeArtifacts(result))
-        .then(() => result);
+      await activeModelSession?.stop().catch((error: unknown) => {
+        this.app.log.warn({ error }, "realtime model session stop failed");
+      });
+      await this.finalizeArtifacts(result);
+      return result;
     }
 
     if (activeModelSession !== undefined) {
-      return activeModelSession
-        .stop()
-        .catch((error: unknown) => {
-          this.app.log.warn({ error }, "realtime model session stop failed");
-        })
-        .then(() => undefined);
+      await activeModelSession.stop().catch((error: unknown) => {
+        this.app.log.warn({ error }, "realtime model session stop failed");
+      });
     }
 
-    return Promise.resolve(undefined);
+    return undefined;
   }
 
   private sendModelProviderError(
@@ -493,10 +492,28 @@ class RealtimeConnection {
     return "mock-asr";
   }
 
+  private recordUsageEvent(input: UsageEventInput): void {
+    void Promise.resolve(this.deps.store.appendUsageEvent(input)).catch(
+      (error: unknown) => {
+        this.app.log.warn(
+          {
+            error,
+            sessionId: input.sessionId,
+            userId: input.userId,
+            eventType: input.eventType
+          },
+          "usage event persistence failed"
+        );
+      }
+    );
+  }
+
   private async finalizeArtifacts(
-    result: NonNullable<ReturnType<InMemoryStore["finalizeSession"]>>
+    result: FinalizeSessionResult
   ): Promise<void> {
-    const initialSnapshot = this.deps.store.getSessionSnapshot(result.session.id);
+    const initialSnapshot = await this.deps.store.getSessionSnapshot(
+      result.session.id
+    );
     if (initialSnapshot === undefined) {
       return;
     }
@@ -505,14 +522,14 @@ class RealtimeConnection {
       initialSnapshot
     );
     if (finalized.audioObject !== undefined) {
-      this.deps.store.recordSessionAudioObject({
+      await this.deps.store.recordSessionAudioObject({
         sessionId: result.session.id,
         objectKey: finalized.audioObject.objectKey,
         format: finalized.audioObject.format,
         durationMs: finalized.audioObject.durationMs,
         sizeBytes: finalized.audioObject.sizeBytes
       });
-      const snapshot = this.deps.store.getSessionSnapshot(result.session.id);
+      const snapshot = await this.deps.store.getSessionSnapshot(result.session.id);
       if (snapshot !== undefined) {
         await this.deps.artifactRecorder.persistSessionDocuments(snapshot);
       }
@@ -523,7 +540,7 @@ class RealtimeConnection {
   }
 
   private async persistTranscriptSnapshot(sessionId: string): Promise<void> {
-    const snapshot = this.deps.store.getSessionSnapshot(sessionId);
+    const snapshot = await this.deps.store.getSessionSnapshot(sessionId);
     if (snapshot === undefined) {
       return;
     }

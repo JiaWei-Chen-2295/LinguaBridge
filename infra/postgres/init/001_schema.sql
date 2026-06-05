@@ -59,10 +59,29 @@ CREATE TABLE IF NOT EXISTS subtitle_segments (
   target_text text NOT NULL,
   status text NOT NULL CHECK (status IN ('draft', 'final', 'revised')),
   revision integer NOT NULL CHECK (revision > 0),
+  confidence numeric NOT NULL DEFAULT 0 CHECK (confidence >= 0 AND confidence <= 1),
   terms_hit text[] NOT NULL DEFAULT ARRAY[]::text[],
   latency_ms integer NOT NULL DEFAULT 0 CHECK (latency_ms >= 0),
   updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (session_id, segment_id)
+);
+
+ALTER TABLE IF EXISTS subtitle_segments
+  ADD COLUMN IF NOT EXISTS confidence numeric NOT NULL DEFAULT 0 CHECK (confidence >= 0 AND confidence <= 1);
+
+CREATE TABLE IF NOT EXISTS term_entries (
+  id text PRIMARY KEY,
+  user_id text REFERENCES users(id) ON DELETE CASCADE,
+  source text NOT NULL,
+  target text,
+  mode text NOT NULL CHECK (mode IN ('keep_source', 'fixed_translation')),
+  aliases text[] NOT NULL DEFAULT ARRAY[]::text[],
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (
+    (mode = 'keep_source' AND target IS NULL)
+    OR (mode = 'fixed_translation' AND target IS NOT NULL)
+  )
 );
 
 CREATE TABLE IF NOT EXISTS segment_revisions (
@@ -103,8 +122,11 @@ CREATE TABLE IF NOT EXISTS usage_events (
 
 CREATE INDEX IF NOT EXISTS idx_invites_batch_id ON invites(batch_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON realtime_sessions(user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_session_audio_objects_session_key
+  ON session_audio_objects(session_id, oss_key);
 CREATE INDEX IF NOT EXISTS idx_segments_session_time ON subtitle_segments(session_id, start_ms);
 CREATE INDEX IF NOT EXISTS idx_revisions_session_segment ON segment_revisions(session_id, segment_id);
+CREATE INDEX IF NOT EXISTS idx_term_entries_user_source ON term_entries(user_id, source);
 CREATE INDEX IF NOT EXISTS idx_usage_events_user_created ON usage_events(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_usage_events_session_created ON usage_events(session_id, created_at);
 
@@ -113,6 +135,21 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 BEGIN
+  IF TG_OP = 'UPDATE'
+     AND OLD.id = NEW.id
+     AND OLD.user_id = NEW.user_id
+     AND OLD.event_type = NEW.event_type
+     AND OLD.amount = NEW.amount
+     AND OLD.unit = NEW.unit
+     AND OLD.model IS NOT DISTINCT FROM NEW.model
+     AND OLD.cost_estimate IS NOT DISTINCT FROM NEW.cost_estimate
+     AND OLD.created_at = NEW.created_at
+     AND OLD.session_id IS NOT NULL
+     AND NEW.session_id IS NULL
+     AND NEW.metadata = OLD.metadata || '{"deletedSession": true}'::jsonb THEN
+    RETURN NEW;
+  END IF;
+
   RAISE EXCEPTION 'usage_events is append-only';
 END;
 $$;

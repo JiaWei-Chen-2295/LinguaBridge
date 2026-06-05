@@ -3,7 +3,7 @@ import {
   normalizeExportFormat,
   renderSessionExport
 } from "../domain/exports";
-import type { InMemoryStore } from "../storage/in-memory-store";
+import type { GatewayStore } from "../storage/store";
 
 interface ExportParams {
   sessionId: string;
@@ -15,12 +15,12 @@ interface ExportQuery {
 
 export function registerExportRoutes(
   app: FastifyInstance,
-  store: InMemoryStore
+  store: GatewayStore
 ): void {
   app.get<{ Params: ExportParams; Querystring: ExportQuery }>(
     "/sessions/:sessionId/export",
     async (request, reply) => {
-      const snapshot = store.getSessionSnapshot(request.params.sessionId);
+      const snapshot = await store.getSessionSnapshot(request.params.sessionId);
       if (snapshot === undefined) {
         return reply.code(404).send({
           error: "session_not_found",

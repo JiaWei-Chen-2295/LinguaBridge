@@ -7,19 +7,18 @@ import { registerInviteRoutes } from "./http/invite.routes";
 import { registerSessionRoutes } from "./http/session.routes";
 import { registerUsageRoutes } from "./http/usage.routes";
 import { registerRealtimeGateway } from "./realtime/realtime-gateway";
-import {
-  createInMemoryStore,
-  type InMemoryStore
-} from "./storage/in-memory-store";
+import { createInMemoryStore } from "./storage/in-memory-store";
 import {
   createObjectStorage,
   type ObjectStorage
 } from "./storage/object-storage";
+import { createPgStore } from "./storage/pg-store";
 import { SessionArtifactRecorder } from "./storage/session-artifact-recorder";
+import type { GatewayStore } from "./storage/store";
 
 export interface GatewayApp {
   app: FastifyInstance;
-  store: InMemoryStore;
+  store: GatewayStore;
   objectStorage: ObjectStorage;
   artifactRecorder: SessionArtifactRecorder;
   config: GatewayConfig;
@@ -31,10 +30,7 @@ export async function buildGatewayApp(
   const app = fastify({
     logger: config.logLevel === "silent" ? false : { level: config.logLevel }
   });
-  const store = createInMemoryStore({
-    devInviteCode: config.devInviteCode,
-    devInviteQuotaMinutes: config.devInviteQuotaMinutes
-  });
+  const store = await createGatewayStore(config);
   const objectStorage = createObjectStorage(config);
   await objectStorage.ensureReady();
   const artifactRecorder = new SessionArtifactRecorder(objectStorage);
@@ -45,6 +41,25 @@ export async function buildGatewayApp(
   registerExportRoutes(app, store);
   registerSessionRoutes(app, { store, objectStorage, artifactRecorder });
   registerRealtimeGateway(app, { config, store, artifactRecorder });
+  app.addHook("onClose", async () => {
+    await store.close?.();
+  });
 
   return { app, store, objectStorage, artifactRecorder, config };
+}
+
+async function createGatewayStore(config: GatewayConfig): Promise<GatewayStore> {
+  const seed = {
+    devInviteCode: config.devInviteCode,
+    devInviteQuotaMinutes: config.devInviteQuotaMinutes
+  };
+
+  if (config.databaseUrl !== undefined) {
+    return createPgStore({
+      databaseUrl: config.databaseUrl,
+      seed
+    });
+  }
+
+  return createInMemoryStore(seed);
 }
