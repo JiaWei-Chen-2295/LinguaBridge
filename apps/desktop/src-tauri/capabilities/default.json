@@ -3,5 +3,10 @@
   "identifier": "desktop",
   "description": "Main and subtitle overlay windows for LinguaBridge MVP.",
   "windows": ["main", "subtitle-overlay"],
-  "permissions": ["core:default", "core:window:default", "core:event:default"]
+  "permissions": [
+    "core:default",
+    "core:window:default",
+    "core:window:allow-start-dragging",
+    "core:event:default"
+  ]
 }

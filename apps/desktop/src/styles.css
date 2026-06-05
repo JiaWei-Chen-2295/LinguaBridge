@@ -732,6 +732,7 @@ button {
 
 .overlay-grip,
 .overlay-actions,
+.overlay-range-controls,
 .overlay-settings label {
   display: flex;
   align-items: center;
@@ -739,13 +740,61 @@ button {
 }
 
 .overlay-grip {
+  flex: 1 1 180px;
   min-height: 42px;
+  min-width: 150px;
   color: #b9c9c2;
+  cursor: grab;
+  user-select: none;
+}
+
+.overlay-grip:active {
+  cursor: grabbing;
+}
+
+.overlay-grip--locked,
+.overlay-grip--locked:active {
+  cursor: default;
 }
 
 .overlay-actions {
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.overlay-record-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 36px;
+  max-width: 210px;
+  padding: 0 11px;
+  border-radius: 8px;
+  color: #172126;
+  background: #98f0c0;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.overlay-record-button:hover:not(:disabled) {
+  background: #b8f5d3;
+}
+
+.overlay-record-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.56;
+}
+
+.overlay-record-button--active {
+  color: #ffffff;
+  background: #b54444;
+}
+
+.overlay-record-button--active:hover:not(:disabled) {
+  background: #963737;
 }
 
 .overlay-shell .icon-button {
@@ -797,12 +846,32 @@ button {
 }
 
 .overlay-settings {
-  justify-content: flex-start;
+  justify-content: space-between;
+  min-height: 54px;
 }
 
 .overlay-settings input[type="range"] {
-  width: 160px;
+  width: 128px;
   accent-color: #98f0c0;
+}
+
+.overlay-range-controls {
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+}
+
+.overlay-capture-line {
+  overflow: hidden;
+  min-width: 180px;
+  color: #b9c9c2;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.overlay-capture-line--error {
+  color: #ffd4cf;
 }
 
 .overlay-reveal {
