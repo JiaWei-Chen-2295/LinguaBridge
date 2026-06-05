@@ -161,6 +161,13 @@ export class InMemoryStore {
         return { ok: true, user: activation.user };
       }
 
+      if (activation.code === "invite_already_used") {
+        const activatedUser = this.findActiveUserByInviteCode(input.inviteCode);
+        if (activatedUser !== undefined) {
+          return { ok: true, user: activatedUser };
+        }
+      }
+
       return activation;
     }
 
@@ -451,6 +458,16 @@ export class InMemoryStore {
     }
 
     return undefined;
+  }
+
+  private findActiveUserByInviteCode(code: string): User | undefined {
+    const invite = this.invitesByHash.get(hashInviteCode(code));
+    if (invite?.activatedBy === undefined) {
+      return undefined;
+    }
+
+    const user = this.users.get(invite.activatedBy);
+    return user?.status === "active" ? user : undefined;
   }
 }
 
