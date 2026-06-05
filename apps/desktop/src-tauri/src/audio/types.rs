@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+use super::error::AudioCaptureErrorKind;
+
+pub const AUDIO_CAPTURE_STATUS_EVENT: &str = "audio-capture-status";
 pub const AUDIO_FRAME_EVENT: &str = "audio-frame";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,6 +72,7 @@ pub struct AudioCaptureStatus {
     pub channels: u16,
     pub frame_duration_ms: u16,
     pub last_error: Option<String>,
+    pub last_error_kind: Option<AudioCaptureErrorKind>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -95,6 +99,7 @@ impl Default for AudioCaptureStatus {
             channels: config.channels,
             frame_duration_ms: config.frame_duration_ms,
             last_error: None,
+            last_error_kind: None,
         }
     }
 }

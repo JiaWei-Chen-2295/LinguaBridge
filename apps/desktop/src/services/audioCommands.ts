@@ -9,6 +9,7 @@ import type {
   AudioDevice
 } from "../types/audio";
 
+export const AUDIO_CAPTURE_STATUS_EVENT = "audio-capture-status";
 export const AUDIO_FRAME_EVENT = "audio-frame";
 
 const defaultAudioConfig: AudioCaptureConfig = {
@@ -45,6 +46,14 @@ export async function listenToAudioFrames(
   handler: (payload: AudioFramePayload) => void
 ): Promise<UnlistenFn> {
   return listen<AudioFramePayload>(AUDIO_FRAME_EVENT, (event) => {
+    handler(event.payload);
+  });
+}
+
+export async function listenToAudioCaptureStatus(
+  handler: (payload: AudioCaptureStatus) => void
+): Promise<UnlistenFn> {
+  return listen<AudioCaptureStatus>(AUDIO_CAPTURE_STATUS_EVENT, (event) => {
     handler(event.payload);
   });
 }

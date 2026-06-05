@@ -3,14 +3,14 @@ use std::sync::{
     Arc, Mutex, OnceLock,
 };
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tauri::{AppHandle, Emitter};
 
 use super::error::{AudioCaptureError, AudioCaptureErrorKind};
 use super::types::{
-    AudioCaptureConfig, AudioDevice, AudioDeviceKind, AudioDeviceStatus, AudioFramePayload,
-    AUDIO_FRAME_EVENT,
+    AudioCaptureConfig, AudioCaptureStatus, AudioCaptureStatusKind, AudioDevice, AudioDeviceKind,
+    AudioDeviceStatus, AudioFramePayload, AUDIO_CAPTURE_STATUS_EVENT, AUDIO_FRAME_EVENT,
 };
 
 #[cfg(windows)]
@@ -50,6 +50,11 @@ struct CaptureThread {
 #[cfg(windows)]
 static CAPTURE_THREAD: OnceLock<Mutex<Option<CaptureThread>>> = OnceLock::new();
 
+pub struct CaptureStartInfo {
+    pub device_id: String,
+    pub started_at_ms: u64,
+}
+
 #[cfg(windows)]
 pub fn list_loopback_devices() -> Result<Vec<AudioDevice>, AudioCaptureError> {
     match thread::spawn(list_loopback_devices_on_thread).join() {
@@ -66,9 +71,7 @@ pub fn list_loopback_devices() -> Result<Vec<AudioDevice>, AudioCaptureError> {
 fn list_loopback_devices_on_thread() -> Result<Vec<AudioDevice>, AudioCaptureError> {
     let _com = ComApartment::initialize()?;
     let enumerator = create_device_enumerator()?;
-    let default_device = unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole) }
-        .map_err(|error| windows_error(AudioCaptureErrorKind::DeviceUnavailable, error))?;
-    let default_device_id = device_id(&default_device)?;
+    let default_device_id = default_output_device_id(&enumerator)?;
     let collection = unsafe { enumerator.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE) }
         .map_err(|error| windows_error(AudioCaptureErrorKind::DeviceUnavailable, error))?;
     let device_count = unsafe { collection.GetCount() }
@@ -117,7 +120,7 @@ pub fn list_loopback_devices() -> Result<Vec<AudioDevice>, AudioCaptureError> {
 pub fn start_loopback_capture(
     config: &AudioCaptureConfig,
     app: AppHandle,
-) -> Result<(), AudioCaptureError> {
+) -> Result<CaptureStartInfo, AudioCaptureError> {
     if config.sample_rate_hz != 16_000 || config.channels != 1 {
         return Err(AudioCaptureError::new(
             AudioCaptureErrorKind::SampleRateConversionFailed,
@@ -146,9 +149,9 @@ pub fn start_loopback_capture(
     let join = thread::spawn(move || run_capture_thread(thread_config, app, thread_stop, ready_tx));
 
     match ready_rx.recv_timeout(Duration::from_secs(3)) {
-        Ok(Ok(())) => {
+        Ok(Ok(start_info)) => {
             *guard = Some(CaptureThread { stop, join });
-            Ok(())
+            Ok(start_info)
         }
         Ok(Err(error)) => {
             let _ = join.join();
@@ -170,7 +173,7 @@ pub fn start_loopback_capture(
 pub fn start_loopback_capture(
     _config: &AudioCaptureConfig,
     _app: AppHandle,
-) -> Result<(), AudioCaptureError> {
+) -> Result<CaptureStartInfo, AudioCaptureError> {
     Err(AudioCaptureError::new(
         AudioCaptureErrorKind::UnsupportedPlatform,
         "LinguaBridge MVP audio capture can only start on Windows 10/11.",
@@ -210,11 +213,54 @@ pub fn stop_loopback_capture() -> Result<(), AudioCaptureError> {
 }
 
 #[cfg(windows)]
+pub fn take_finished_loopback_capture(
+) -> Result<Option<Result<(), AudioCaptureError>>, AudioCaptureError> {
+    let slot = CAPTURE_THREAD.get_or_init(|| Mutex::new(None));
+    let mut guard = slot.lock().map_err(|_| {
+        AudioCaptureError::new(
+            AudioCaptureErrorKind::Internal,
+            "WASAPI capture lock is poisoned.",
+            true,
+        )
+    })?;
+
+    let Some(capture_thread) = guard.as_ref() else {
+        return Ok(None);
+    };
+
+    if !capture_thread.join.is_finished() {
+        return Ok(None);
+    }
+
+    let Some(capture_thread) = guard.take() else {
+        return Ok(None);
+    };
+
+    capture_thread.stop.store(true, Ordering::SeqCst);
+    let result = match capture_thread.join.join() {
+        Ok(result) => result,
+        Err(_) => Err(AudioCaptureError::new(
+            AudioCaptureErrorKind::Internal,
+            "WASAPI capture thread panicked.",
+            true,
+        )),
+    };
+
+    Ok(Some(result))
+}
+
+#[cfg(not(windows))]
+pub fn take_finished_loopback_capture(
+) -> Result<Option<Result<(), AudioCaptureError>>, AudioCaptureError> {
+    Ok(None)
+}
+
+#[cfg(windows)]
 fn run_capture_thread(
     config: AudioCaptureConfig,
     app: AppHandle,
     stop: Arc<AtomicBool>,
-    ready_tx: std::sync::mpsc::Sender<Result<(), AudioCaptureError>>,
+    ready_tx: std::sync::mpsc::Sender<Result<CaptureStartInfo, AudioCaptureError>>,
 ) -> Result<(), AudioCaptureError> {
     let result = run_capture_loop(config, app, stop, &ready_tx);
     if let Err(error) = &result {
@@ -228,11 +274,14 @@ fn run_capture_loop(
     config: AudioCaptureConfig,
     app: AppHandle,
     stop: Arc<AtomicBool>,
-    ready_tx: &std::sync::mpsc::Sender<Result<(), AudioCaptureError>>,
+    ready_tx: &std::sync::mpsc::Sender<Result<CaptureStartInfo, AudioCaptureError>>,
 ) -> Result<(), AudioCaptureError> {
     let _com = ComApartment::initialize()?;
     let enumerator = create_device_enumerator()?;
+    let default_device_id = default_output_device_id(&enumerator)?;
     let device = resolve_loopback_device(&enumerator, config.device_id.as_deref())?;
+    let active_device_id = device_id(&device)?;
+    let follows_default_output = active_device_id == default_device_id;
     let audio_client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None) }
         .map_err(|error| windows_error(AudioCaptureErrorKind::WasapiUnavailable, error))?;
     let mix_format_ptr = unsafe { audio_client.GetMixFormat() }
@@ -255,16 +304,55 @@ fn run_capture_loop(
 
     let capture_client: IAudioCaptureClient = unsafe { audio_client.GetService() }
         .map_err(|error| windows_error(AudioCaptureErrorKind::WasapiUnavailable, error))?;
-    let mut emitter = FrameEmitter::new(config, mix_format.sample_rate, app);
+    let mut emitter = FrameEmitter::new(config.clone(), mix_format.sample_rate, app.clone());
 
     unsafe {
         audio_client
             .Start()
             .map_err(|error| windows_error(AudioCaptureErrorKind::WasapiUnavailable, error))?;
     }
-    let _ = ready_tx.send(Ok(()));
+    let started_at_ms = now_ms();
+    let mut default_output_tracker =
+        follows_default_output.then(|| DefaultOutputDeviceTracker::new(active_device_id.clone()));
+    let _ = ready_tx.send(Ok(CaptureStartInfo {
+        device_id: active_device_id.clone(),
+        started_at_ms,
+    }));
 
+    let capture_result = pump_capture_packets(
+        &enumerator,
+        &capture_client,
+        &mix_format,
+        &mut emitter,
+        default_output_tracker.as_mut(),
+        &stop,
+    );
+
+    unsafe {
+        let _ = audio_client.Stop();
+    }
+
+    if let Err(error) = &capture_result {
+        emit_capture_status_error(&app, &config, &active_device_id, started_at_ms, error);
+    }
+
+    capture_result
+}
+
+#[cfg(windows)]
+fn pump_capture_packets(
+    enumerator: &IMMDeviceEnumerator,
+    capture_client: &IAudioCaptureClient,
+    mix_format: &MixFormat,
+    emitter: &mut FrameEmitter,
+    mut default_output_tracker: Option<&mut DefaultOutputDeviceTracker>,
+    stop: &AtomicBool,
+) -> Result<(), AudioCaptureError> {
     while !stop.load(Ordering::SeqCst) {
+        if let Some(tracker) = default_output_tracker.as_deref_mut() {
+            tracker.check(enumerator)?;
+        }
+
         let mut packet_size = unsafe { capture_client.GetNextPacketSize() }
             .map_err(|error| windows_error(AudioCaptureErrorKind::WasapiUnavailable, error))?;
 
@@ -305,10 +393,6 @@ fn run_capture_loop(
         }
     }
 
-    unsafe {
-        let _ = audio_client.Stop();
-    }
-
     Ok(())
 }
 
@@ -316,6 +400,13 @@ fn run_capture_loop(
 fn create_device_enumerator() -> Result<IMMDeviceEnumerator, AudioCaptureError> {
     unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
         .map_err(|error| windows_error(AudioCaptureErrorKind::WasapiUnavailable, error))
+}
+
+#[cfg(windows)]
+fn default_output_device_id(enumerator: &IMMDeviceEnumerator) -> Result<String, AudioCaptureError> {
+    let default_device = unsafe { enumerator.GetDefaultAudioEndpoint(eRender, eConsole) }
+        .map_err(|error| windows_error(AudioCaptureErrorKind::DeviceUnavailable, error))?;
+    device_id(&default_device)
 }
 
 #[cfg(windows)]
@@ -333,6 +424,47 @@ fn resolve_loopback_device(
 
     unsafe { enumerator.GetDevice(PCWSTR::from_raw(wide_device_id.as_ptr())) }
         .map_err(|error| windows_error(AudioCaptureErrorKind::DeviceUnavailable, error))
+}
+
+#[cfg(windows)]
+struct DefaultOutputDeviceTracker {
+    captured_device_id: String,
+    next_check_at: Instant,
+}
+
+#[cfg(windows)]
+impl DefaultOutputDeviceTracker {
+    fn new(captured_device_id: String) -> Self {
+        Self {
+            captured_device_id,
+            next_check_at: Instant::now(),
+        }
+    }
+
+    fn check(&mut self, enumerator: &IMMDeviceEnumerator) -> Result<(), AudioCaptureError> {
+        if Instant::now() < self.next_check_at {
+            return Ok(());
+        }
+
+        self.next_check_at = Instant::now() + Duration::from_millis(500);
+        let current_default_id = default_output_device_id(enumerator).map_err(|_| {
+            AudioCaptureError::new(
+                AudioCaptureErrorKind::DeviceSwitchRequired,
+                "Windows default output device is unavailable. Stop and restart capture after selecting an available output device.",
+                true,
+            )
+        })?;
+
+        if current_default_id == self.captured_device_id {
+            return Ok(());
+        }
+
+        Err(AudioCaptureError::new(
+            AudioCaptureErrorKind::DeviceSwitchRequired,
+            "Windows default output device changed while capturing. Stop and restart capture so LinguaBridge can attach to the new output device.",
+            true,
+        ))
+    }
 }
 
 #[cfg(windows)]
@@ -379,9 +511,7 @@ fn device_name(device: &IMMDevice) -> Option<String> {
 }
 
 #[cfg(windows)]
-fn device_mix_format(
-    device: &IMMDevice,
-) -> Result<(Option<u32>, Option<u16>), AudioCaptureError> {
+fn device_mix_format(device: &IMMDevice) -> Result<(Option<u32>, Option<u16>), AudioCaptureError> {
     let audio_client: IAudioClient = unsafe { device.Activate(CLSCTX_ALL, None) }
         .map_err(|error| windows_error(AudioCaptureErrorKind::WasapiUnavailable, error))?;
     let mix_format_ptr = unsafe { audio_client.GetMixFormat() }
@@ -601,6 +731,28 @@ struct FrameEmitter {
     output_buffer: Vec<i16>,
     frame_samples: usize,
     sequence: u64,
+}
+
+#[cfg(windows)]
+fn emit_capture_status_error(
+    app: &AppHandle,
+    config: &AudioCaptureConfig,
+    active_device_id: &str,
+    started_at_ms: u64,
+    error: &AudioCaptureError,
+) {
+    let status = AudioCaptureStatus {
+        state: AudioCaptureStatusKind::Error,
+        active_device_id: Some(active_device_id.to_string()),
+        started_at_ms: Some(started_at_ms),
+        sample_rate_hz: config.sample_rate_hz,
+        channels: config.channels,
+        frame_duration_ms: config.frame_duration_ms,
+        last_error: Some(error.message.clone()),
+        last_error_kind: Some(error.kind),
+    };
+
+    let _ = app.emit(AUDIO_CAPTURE_STATUS_EVENT, status);
 }
 
 #[cfg(windows)]

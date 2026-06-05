@@ -1,10 +1,12 @@
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::error::{AudioCaptureError, AudioCaptureErrorKind};
-use super::types::{AudioCaptureConfig, AudioCaptureStatus, AudioCaptureStatusKind, AudioDevice};
+use super::types::{
+    AudioCaptureConfig, AudioCaptureStatus, AudioCaptureStatusKind, AudioDevice,
+    AUDIO_CAPTURE_STATUS_EVENT,
+};
 use super::wasapi;
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 
 #[derive(Default)]
 pub struct AudioState {
@@ -17,7 +19,7 @@ impl AudioState {
     }
 
     pub fn status(&self) -> Result<AudioCaptureStatus, AudioCaptureError> {
-        let status = self.inner.lock().map_err(|_| {
+        let mut status = self.inner.lock().map_err(|_| {
             AudioCaptureError::new(
                 AudioCaptureErrorKind::Internal,
                 "Audio status lock is poisoned.",
@@ -25,6 +27,7 @@ impl AudioState {
             )
         })?;
 
+        sync_finished_capture(&mut status)?;
         Ok(status.clone())
     }
 
@@ -41,6 +44,8 @@ impl AudioState {
             )
         })?;
 
+        sync_finished_capture(&mut status)?;
+
         if matches!(
             status.state,
             AudioCaptureStatusKind::Starting | AudioCaptureStatusKind::Capturing
@@ -54,17 +59,26 @@ impl AudioState {
         status.channels = config.channels;
         status.frame_duration_ms = config.frame_duration_ms;
         status.last_error = None;
+        status.last_error_kind = None;
+        emit_status(&app, &status);
 
-        match wasapi::start_loopback_capture(&config, app) {
-            Ok(()) => {
+        match wasapi::start_loopback_capture(&config, app.clone()) {
+            Ok(start_info) => {
                 status.state = AudioCaptureStatusKind::Capturing;
-                status.started_at_ms = Some(now_ms());
+                status.active_device_id = Some(start_info.device_id);
+                status.started_at_ms = Some(start_info.started_at_ms);
+                status.last_error = None;
+                status.last_error_kind = None;
+                emit_status(&app, &status);
                 Ok(status.clone())
             }
             Err(error) => {
                 status.state = AudioCaptureStatusKind::Error;
+                status.active_device_id = None;
                 status.started_at_ms = None;
                 status.last_error = Some(error.message.clone());
+                status.last_error_kind = Some(error.kind);
+                emit_status(&app, &status);
                 Err(error)
             }
         }
@@ -79,6 +93,8 @@ impl AudioState {
             )
         })?;
 
+        sync_finished_capture(&mut status)?;
+
         if matches!(status.state, AudioCaptureStatusKind::Idle) {
             return Err(AudioCaptureError::not_capturing());
         }
@@ -89,6 +105,7 @@ impl AudioState {
             status.active_device_id = None;
             status.started_at_ms = None;
             status.last_error = Some(error.message.clone());
+            status.last_error_kind = Some(error.kind);
             return Err(error);
         }
 
@@ -96,13 +113,41 @@ impl AudioState {
         status.active_device_id = None;
         status.started_at_ms = None;
         status.last_error = None;
+        status.last_error_kind = None;
         Ok(status.clone())
     }
 }
 
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0)
+fn sync_finished_capture(status: &mut AudioCaptureStatus) -> Result<(), AudioCaptureError> {
+    if !matches!(
+        status.state,
+        AudioCaptureStatusKind::Starting | AudioCaptureStatusKind::Capturing
+    ) {
+        return Ok(());
+    }
+
+    let Some(result) = wasapi::take_finished_loopback_capture()? else {
+        return Ok(());
+    };
+
+    match result {
+        Ok(()) => {
+            status.state = AudioCaptureStatusKind::Idle;
+            status.active_device_id = None;
+            status.started_at_ms = None;
+            status.last_error = None;
+            status.last_error_kind = None;
+        }
+        Err(error) => {
+            status.state = AudioCaptureStatusKind::Error;
+            status.last_error = Some(error.message);
+            status.last_error_kind = Some(error.kind);
+        }
+    }
+
+    Ok(())
+}
+
+fn emit_status(app: &AppHandle, status: &AudioCaptureStatus) {
+    let _ = app.emit(AUDIO_CAPTURE_STATUS_EVENT, status.clone());
 }

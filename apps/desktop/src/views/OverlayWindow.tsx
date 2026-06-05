@@ -1,6 +1,5 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
-  CircleDot,
   CircleX,
   Eye,
   EyeOff,
@@ -8,25 +7,19 @@ import {
   Lock,
   Maximize2,
   Minus,
-  Square,
   Type,
   Unlock
 } from "lucide-react";
 import type { MouseEvent, ReactElement } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { IconButton } from "../components/IconButton";
 import { StatusPill } from "../components/StatusPill";
-import { subtitleSegments } from "../data/mockData";
 import {
-  getAudioCaptureStatus,
-  listenToAudioFrames,
-  startAudioCapture,
-  stopAudioCapture,
-  toAudioCommandError
-} from "../services/audioCommands";
-import type { AudioCaptureStatus } from "../types/audio";
-import type { OverlayLineMode } from "../types/protocol";
+  listenToOverlaySubtitles,
+  readCachedOverlaySubtitles
+} from "../services/overlaySubtitle";
+import type { OverlayLineMode, SubtitleSegmentEvent } from "../types/protocol";
 
 export function OverlayWindow(): ReactElement {
   const [locked, setLocked] = useState(false);
@@ -34,90 +27,55 @@ export function OverlayWindow(): ReactElement {
   const [fontSize, setFontSize] = useState(30);
   const [lineMode, setLineMode] = useState<OverlayLineMode>("dual");
   const [showChrome, setShowChrome] = useState(true);
-  const [captureStatus, setCaptureStatus] = useState<AudioCaptureStatus | null>(null);
-  const [captureBusy, setCaptureBusy] = useState(false);
-  const [audioFeedback, setAudioFeedback] = useState("点击录制 Windows 音频开始本地采集。");
-  const [receivedFrames, setReceivedFrames] = useState(0);
-  const overlayStartedCaptureRef = useRef(false);
+  const [visibleSegments, setVisibleSegments] = useState<SubtitleSegmentEvent[]>(() =>
+    readCachedOverlaySubtitles()
+  );
+  const [syncFeedback, setSyncFeedback] = useState("等待主窗口实时字幕。");
 
-  const visibleSegments = useMemo(() => subtitleSegments.slice(-2), []);
-  const isCapturing = captureStatus?.state === "capturing";
-  const captureOwnedByOverlay = isCapturing && overlayStartedCaptureRef.current;
-  const captureControlDisabled = captureBusy || (isCapturing && !captureOwnedByOverlay);
-  const CaptureIcon = isCapturing ? Square : CircleDot;
+  const synced = visibleSegments.length > 0;
 
   useEffect(() => {
     let cancelled = false;
-    let unlistenFrames: (() => void) | null = null;
-    let refreshTimer: number | null = null;
+    let unlistenSubtitles: (() => void) | null = null;
 
-    async function hydrateAudioCapture(): Promise<void> {
+    async function subscribeToSubtitles(): Promise<void> {
       try {
-        const [nextStatus, nextUnlistenFrames] = await Promise.all([
-          getAudioCaptureStatus(),
-          listenToAudioFrames(() => {
-            setReceivedFrames((current) => current + 1);
-          })
-        ]);
+        const unlisten = await listenToOverlaySubtitles((payload) => {
+          const nextSegments = payload.segments.slice(-2);
+          setVisibleSegments(nextSegments);
+          setSyncFeedback(
+            nextSegments.length > 0
+              ? `已同步主窗口最近 ${nextSegments.length} 段字幕。`
+              : "等待主窗口实时字幕。"
+          );
+        });
 
         if (cancelled) {
-          nextUnlistenFrames();
+          unlisten();
           return;
         }
 
-        unlistenFrames = nextUnlistenFrames;
-        setCaptureStatus(nextStatus);
-        setAudioFeedback(getOverlayAudioFeedback(nextStatus, 0, false));
+        unlistenSubtitles = unlisten;
       } catch (error) {
         if (!cancelled) {
-          setAudioFeedback(getOverlayRuntimeFeedback(error));
+          setSyncFeedback(getOverlayRuntimeFeedback(error));
         }
       }
     }
 
-    async function refreshAudioCaptureStatus(): Promise<void> {
-      try {
-        const nextStatus = await getAudioCaptureStatus();
-
-        if (!cancelled) {
-          setCaptureStatus(nextStatus);
-        }
-      } catch {
-        if (refreshTimer !== null) {
-          window.clearInterval(refreshTimer);
-          refreshTimer = null;
-        }
-      }
-    }
-
-    void hydrateAudioCapture();
-    refreshTimer = window.setInterval(() => {
-      void refreshAudioCaptureStatus();
-    }, 1_500);
+    void subscribeToSubtitles();
 
     return () => {
       cancelled = true;
-      if (refreshTimer !== null) {
-        window.clearInterval(refreshTimer);
-      }
-      unlistenFrames?.();
-
-      if (overlayStartedCaptureRef.current) {
-        overlayStartedCaptureRef.current = false;
-        void stopAudioCapture().catch(() => undefined);
-      }
+      unlistenSubtitles?.();
     };
   }, []);
 
   useEffect(() => {
-    if (captureStatus === null) {
-      return;
+    if (visibleSegments.length > 0) {
+      setSyncFeedback(`已同步主窗口最近 ${visibleSegments.length} 段字幕。`);
     }
-
-    setAudioFeedback(
-      getOverlayAudioFeedback(captureStatus, receivedFrames, overlayStartedCaptureRef.current)
-    );
-  }, [captureStatus, receivedFrames]);
+  }, [visibleSegments.length]);
 
   async function handleDragStart(event: MouseEvent<HTMLDivElement>): Promise<void> {
     if (locked || event.button !== 0) {
@@ -129,47 +87,7 @@ export function OverlayWindow(): ReactElement {
     try {
       await getCurrentWindow().startDragging();
     } catch (error) {
-      setAudioFeedback(getOverlayRuntimeFeedback(error));
-    }
-  }
-
-  async function handleCaptureToggle(): Promise<void> {
-    if (captureBusy) {
-      return;
-    }
-
-    setCaptureBusy(true);
-
-    try {
-      if (isCapturing && overlayStartedCaptureRef.current) {
-        const nextStatus = await stopAudioCapture();
-        overlayStartedCaptureRef.current = false;
-        setCaptureStatus(nextStatus);
-        setReceivedFrames(0);
-        return;
-      }
-
-      const nextStatus = await startAudioCapture({
-        deviceId: null,
-        sampleRateHz: 16_000,
-        channels: 1,
-        frameDurationMs: 20
-      });
-      overlayStartedCaptureRef.current = true;
-      setCaptureStatus(nextStatus);
-      setReceivedFrames(0);
-    } catch (error) {
-      const commandError = toAudioCommandError(error);
-
-      if (commandError.kind === "alreadyCapturing") {
-        const nextStatus = await getAudioCaptureStatus().catch(() => null);
-        overlayStartedCaptureRef.current = false;
-        setCaptureStatus(nextStatus);
-      }
-
-      setAudioFeedback(getOverlayRuntimeFeedback(error));
-    } finally {
-      setCaptureBusy(false);
+      setSyncFeedback(getOverlayRuntimeFeedback(error));
     }
   }
 
@@ -177,7 +95,7 @@ export function OverlayWindow(): ReactElement {
     try {
       await getCurrentWindow().hide();
     } catch (error) {
-      setAudioFeedback(getOverlayRuntimeFeedback(error));
+      setSyncFeedback(getOverlayRuntimeFeedback(error));
     }
   }
 
@@ -195,30 +113,7 @@ export function OverlayWindow(): ReactElement {
             <span>LinguaBridge</span>
           </div>
           <div className="overlay-actions">
-            <StatusPill
-              label={isCapturing ? "录制中" : "未录制"}
-              tone={captureStatus?.state === "error" ? "error" : isCapturing ? "active" : "idle"}
-            />
-            <button
-              className={`overlay-record-button ${isCapturing ? "overlay-record-button--active" : ""}`}
-              disabled={captureControlDisabled}
-              onClick={handleCaptureToggle}
-              title={
-                isCapturing && !captureOwnedByOverlay
-                  ? "主窗口正在采集，停止请回主窗口"
-                  : undefined
-              }
-              type="button"
-            >
-              <CaptureIcon size={16} aria-hidden="true" />
-              <span>
-                {isCapturing
-                  ? captureOwnedByOverlay
-                    ? "停止录制"
-                    : "主窗口录制中"
-                  : "录制 Windows 音频"}
-              </span>
-            </button>
+            <StatusPill label={synced ? "已同步" : "待同步"} tone={synced ? "active" : "idle"} />
             <IconButton
               icon={lineMode === "dual" ? Maximize2 : Minus}
               label={lineMode === "dual" ? "切换单行字幕" : "切换双行字幕"}
@@ -241,16 +136,23 @@ export function OverlayWindow(): ReactElement {
       )}
 
       <section className="caption-stage" aria-label="Realtime subtitles">
-        {visibleSegments.map((segment) => (
-          <article
-            className={`caption-line caption-line--${segment.status}`}
-            key={segment.segmentId}
-            style={{ fontSize: `${fontSize}px` }}
-          >
-            <p>{segment.targetText}</p>
-            {lineMode === "dual" ? <span>{segment.sourceText}</span> : null}
-          </article>
-        ))}
+        {visibleSegments.length === 0 ? (
+          <div className="caption-empty" style={{ fontSize: `${Math.max(22, fontSize - 4)}px` }}>
+            <p>等待实时字幕</p>
+            {lineMode === "dual" ? <span>Start a session in the main window.</span> : null}
+          </div>
+        ) : (
+          visibleSegments.map((segment) => (
+            <article
+              className={`caption-line caption-line--${segment.status}`}
+              key={segment.segmentId}
+              style={{ fontSize: `${fontSize}px` }}
+            >
+              <p>{segment.targetText}</p>
+              {lineMode === "dual" ? <span>{segment.sourceText}</span> : null}
+            </article>
+          ))
+        )}
       </section>
 
       {showChrome ? (
@@ -281,10 +183,10 @@ export function OverlayWindow(): ReactElement {
           </div>
           <span
             className={`overlay-capture-line ${
-              captureStatus?.state === "error" ? "overlay-capture-line--error" : ""
+              syncFeedback.includes("失败") ? "overlay-capture-line--error" : ""
             }`}
           >
-            {audioFeedback}
+            {syncFeedback}
           </span>
         </footer>
       ) : null}
@@ -292,50 +194,18 @@ export function OverlayWindow(): ReactElement {
   );
 }
 
-function getOverlayAudioFeedback(
-  captureStatus: AudioCaptureStatus,
-  receivedFrames: number,
-  captureOwnedByOverlay: boolean
-): string {
-  if (captureStatus.state === "capturing") {
-    if (receivedFrames > 0) {
-      return `Windows 音频采集中，已收到 ${receivedFrames} 帧。`;
-    }
-
-    return captureOwnedByOverlay
-      ? "Windows 音频采集中，等待第一帧。"
-      : "主窗口正在录制 Windows 音频。";
-  }
-
-  if (captureStatus.state === "starting") {
-    return "正在启动 Windows 音频采集。";
-  }
-
-  if (captureStatus.state === "stopping") {
-    return "正在停止 Windows 音频采集。";
-  }
-
-  if (captureStatus.state === "error") {
-    return captureStatus.lastError ?? "Windows 音频采集失败。";
-  }
-
-  return "点击录制 Windows 音频开始本地采集。";
-}
-
 function getOverlayRuntimeFeedback(error: unknown): string {
-  const commandError = toAudioCommandError(error);
-
-  if (commandError.kind !== "internal") {
-    return commandError.message;
-  }
-
   if (error instanceof Error) {
-    if (error.message.includes("reading 'invoke'") || error.message.includes("window.__TAURI__")) {
-      return "当前是浏览器预览环境，系统音频采集需要在 Tauri 桌面端中运行。";
+    if (
+      error.message.includes("reading 'invoke'") ||
+      error.message.includes("transformCallback") ||
+      error.message.includes("window.__TAURI__")
+    ) {
+      return "当前是浏览器预览环境，浮窗控制需要在 Tauri 桌面端中运行。";
     }
 
     return error.message;
   }
 
-  return commandError.message;
+  return "浮窗控制失败，请重新打开悬浮窗。";
 }

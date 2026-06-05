@@ -1,9 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
-import {
-  estimateTranslationTokens,
-  mockRealtimeSubtitleStream
-} from "@lingua-bridge/mock-models";
+import { estimateTranslationTokens } from "@lingua-bridge/mock-models";
 import type {
   GatewayErrorCode,
   GatewayErrorEvent,
@@ -23,6 +20,12 @@ import type {
   ResolveSessionUserInput
 } from "../storage/in-memory-store";
 import type { SessionArtifactRecorder } from "../storage/session-artifact-recorder";
+import {
+  createRealtimeModelSession,
+  getRealtimeModelProviderIssue,
+  type RealtimeModelProviderError,
+  type RealtimeModelSession
+} from "./model-session";
 import { parseRealtimeClientMessage } from "./ws-messages";
 
 export interface RealtimeGatewayDeps {
@@ -52,6 +55,17 @@ export function registerRealtimeGateway(
     );
     new RealtimeConnection(socket, app, deps);
   });
+  wss.on("error", (error) => {
+    app.log.error(
+      {
+        error,
+        host: deps.config.host,
+        port: deps.config.port,
+        path: deps.config.websocketPath
+      },
+      "realtime websocket server failed"
+    );
+  });
 
   app.addHook("onClose", (_instance, done) => {
     wss.close(() => done());
@@ -64,6 +78,8 @@ class RealtimeConnection {
   private closed = false;
   private stoppedByClient = false;
   private messageQueue: Promise<void> = Promise.resolve();
+  private modelSession: RealtimeModelSession | undefined;
+  private providerErrorSent = false;
 
   public constructor(
     private readonly socket: WebSocket,
@@ -157,6 +173,12 @@ class RealtimeConnection {
       return;
     }
 
+    const providerIssue = getRealtimeModelProviderIssue(this.deps.config);
+    if (providerIssue !== undefined) {
+      this.sendModelProviderError(providerIssue, message.requestId);
+      return;
+    }
+
     const resolveInput: ResolveSessionUserInput = {};
     if (message.payload.userId !== undefined) {
       resolveInput.userId = message.payload.userId;
@@ -187,6 +209,36 @@ class RealtimeConnection {
       sessionId: session.id
     });
 
+    this.modelSession = createRealtimeModelSession({
+      config: this.deps.config,
+      context: {
+        sessionId: session.id,
+        sourceLang: session.sourceLang,
+        targetLang: session.targetLang
+      },
+      callbacks: {
+        onSubtitleEvent: (event) => this.handleSubtitleEvent(event),
+        onProviderError: (error) => this.sendModelProviderError(error)
+      },
+      log: this.app.log
+    });
+
+    try {
+      await this.modelSession.start();
+    } catch (error: unknown) {
+      await this.finalizeActiveSession("interrupted", true);
+      this.sendModelProviderError(
+        {
+          message: "Realtime model provider could not be started.",
+          nextStep:
+            "Check the gateway model environment variables and use MODEL_PROVIDER=mock for local validation without cloud credentials.",
+          cause: error
+        },
+        message.requestId
+      );
+      return;
+    }
+
     const event: SessionStartedEvent = {
       type: "session.started",
       version: 1,
@@ -200,12 +252,6 @@ class RealtimeConnection {
       }
     };
     this.sendEvent(event);
-
-    void this.pushMockSubtitleEvents(
-      session.id,
-      session.sourceLang,
-      session.targetLang
-    );
   }
 
   private async handleAudioFrame(
@@ -245,7 +291,7 @@ class RealtimeConnection {
       eventType: "asr_audio_duration",
       amount: message.payload.durationMs,
       unit: "milliseconds",
-      model: "mock-asr",
+      model: this.getAsrUsageModel(),
       metadata: {
         sequence: message.payload.sequence,
         sampleRate: message.payload.sampleRate,
@@ -260,6 +306,17 @@ class RealtimeConnection {
       unit: "bytes",
       model: "local-dev-object-store"
     });
+
+    try {
+      await this.modelSession?.appendAudioFrame(message.payload);
+    } catch (error: unknown) {
+      this.sendModelProviderError({
+        message: "Audio frame could not be sent to the realtime model provider.",
+        nextStep:
+          "Check the model provider connection and retry the session. Use MODEL_PROVIDER=mock to validate the local audio path.",
+        cause: error
+      });
+    }
   }
 
   private async handleStop(
@@ -309,24 +366,21 @@ class RealtimeConnection {
     this.socket.close(1000, "session stopped");
   }
 
-  private async pushMockSubtitleEvents(
-    sessionId: string,
-    sourceLang: string,
-    targetLang: string
+  private async handleSubtitleEvent(
+    event: SubtitleSegmentUpdatedEvent
   ): Promise<void> {
-    for await (const event of mockRealtimeSubtitleStream(
-      { sessionId, sourceLang, targetLang },
-      { delayMs: this.deps.config.mockSubtitleDelayMs }
-    )) {
-      if (this.closed || this.sessionId !== sessionId || this.userId === undefined) {
-        return;
-      }
-
-      this.recordModelUsage(event);
-      this.deps.store.recordSubtitleEvent(event);
-      await this.persistTranscriptSnapshot(event.payload.sessionId);
-      this.sendEvent(event);
+    if (
+      this.closed ||
+      this.sessionId !== event.payload.sessionId ||
+      this.userId === undefined
+    ) {
+      return;
     }
+
+    this.recordModelUsage(event);
+    this.deps.store.recordSubtitleEvent(event);
+    await this.persistTranscriptSnapshot(event.payload.sessionId);
+    this.sendEvent(event);
   }
 
   private recordModelUsage(event: SubtitleSegmentUpdatedEvent): void {
@@ -341,7 +395,7 @@ class RealtimeConnection {
         eventType: "mt_input_tokens",
         amount: estimateTranslationTokens(event.payload.sourceText),
         unit: "tokens",
-        model: "mock-qwen-mt"
+        model: event.payload.modelTrace.mtModel
       });
       this.deps.store.appendUsageEvent({
         userId: this.userId,
@@ -349,7 +403,7 @@ class RealtimeConnection {
         eventType: "mt_output_tokens",
         amount: estimateTranslationTokens(event.payload.targetText),
         unit: "tokens",
-        model: "mock-qwen-mt"
+        model: event.payload.modelTrace.mtModel
       });
     }
 
@@ -362,7 +416,7 @@ class RealtimeConnection {
           `${event.payload.sourceText} ${event.payload.targetText}`
         ),
         unit: "tokens",
-        model: "mock-context-reviser"
+        model: event.payload.modelTrace.correctionModel ?? "gateway-reviser"
       });
     }
   }
@@ -380,6 +434,8 @@ class RealtimeConnection {
     }
 
     const result = this.deps.store.finalizeSession(this.sessionId, status);
+    const activeModelSession = this.modelSession;
+    this.modelSession = undefined;
     if (result !== undefined && result.finalizedNow && interrupted) {
       this.deps.store.appendUsageEvent({
         userId: this.userId,
@@ -392,10 +448,49 @@ class RealtimeConnection {
     }
 
     if (result !== undefined) {
-      return this.finalizeArtifacts(result).then(() => result);
+      return Promise.resolve(activeModelSession?.stop())
+        .catch((error: unknown) => {
+          this.app.log.warn({ error }, "realtime model session stop failed");
+        })
+        .then(() => this.finalizeArtifacts(result))
+        .then(() => result);
+    }
+
+    if (activeModelSession !== undefined) {
+      return activeModelSession
+        .stop()
+        .catch((error: unknown) => {
+          this.app.log.warn({ error }, "realtime model session stop failed");
+        })
+        .then(() => undefined);
     }
 
     return Promise.resolve(undefined);
+  }
+
+  private sendModelProviderError(
+    error: RealtimeModelProviderError,
+    requestId?: string
+  ): void {
+    if (this.providerErrorSent && requestId === undefined) {
+      return;
+    }
+
+    this.providerErrorSent = true;
+    this.sendError(
+      "model_provider_unavailable",
+      error.message,
+      error.nextStep,
+      requestId
+    );
+  }
+
+  private getAsrUsageModel(): string {
+    if (this.deps.config.model.provider === "alibaba-cloud") {
+      return this.deps.config.model.alibabaCloud.asrModel;
+    }
+
+    return "mock-asr";
   }
 
   private async finalizeArtifacts(

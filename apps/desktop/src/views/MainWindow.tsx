@@ -40,6 +40,7 @@ import {
   isOverlayWindowVisible,
   showOverlayWindow
 } from "../services/overlayWindow";
+import { publishOverlaySubtitles } from "../services/overlaySubtitle";
 import { RealtimeGatewayConnection } from "../services/realtimeGateway";
 import type { AudioCaptureStatus, AudioCommandError, AudioDevice } from "../types/audio";
 import type { SubtitleSegmentEvent } from "../types/protocol";
@@ -171,9 +172,13 @@ export function MainWindow(): ReactElement {
       audioFrameUnlistenRef.current = null;
       realtimeConnectionRef.current?.close();
       realtimeConnectionRef.current = null;
-      void stopAudioCapture();
+      void stopAudioCapture().catch(() => undefined);
     };
   }, []);
+
+  useEffect(() => {
+    void publishOverlaySubtitles(liveSubtitleSegments).catch(() => undefined);
+  }, [liveSubtitleSegments]);
 
   function activateInvite(): void {
     const normalizedCode = inviteCode.trim().toUpperCase();

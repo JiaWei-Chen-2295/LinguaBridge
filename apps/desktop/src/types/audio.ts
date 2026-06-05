@@ -28,6 +28,7 @@ export interface AudioCaptureStatus {
   channels: number;
   frameDurationMs: number;
   lastError: string | null;
+  lastErrorKind: AudioCaptureErrorKind | null;
 }
 
 export interface AudioFramePayload {

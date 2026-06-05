@@ -9,6 +9,7 @@
     "build:deps": "npm --prefix ../../packages/mock-models --workspaces=false run build",
     "build": "npm run build:deps && tsc -p tsconfig.json",
     "typecheck": "npm run build:deps && tsc -p tsconfig.json --noEmit",
+    "diagnose:config": "tsx src/diagnose-config.ts",
     "dev": "npm run build:deps && tsx src/main.ts",
     "start": "node dist/main.js"
   },
