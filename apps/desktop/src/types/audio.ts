@@ -1,0 +1,50 @@
+export type AudioDeviceKind = "loopbackOutput" | "microphoneInput";
+export type AudioDeviceStatus = "available" | "unavailable" | "permissionRequired";
+
+export interface AudioDevice {
+  id: string;
+  name: string;
+  kind: AudioDeviceKind;
+  status: AudioDeviceStatus;
+  isDefault: boolean;
+  sampleRateHz: number | null;
+  channels: number | null;
+}
+
+export interface AudioCaptureConfig {
+  deviceId: string | null;
+  sampleRateHz: number;
+  channels: number;
+  frameDurationMs: number;
+}
+
+export type AudioCaptureStatusKind = "idle" | "starting" | "capturing" | "stopping" | "error";
+
+export interface AudioCaptureStatus {
+  state: AudioCaptureStatusKind;
+  activeDeviceId: string | null;
+  startedAtMs: number | null;
+  sampleRateHz: number;
+  channels: number;
+  frameDurationMs: number;
+  lastError: string | null;
+}
+
+export type AudioCaptureErrorKind =
+  | "unsupportedPlatform"
+  | "wasapiUnavailable"
+  | "permissionRequired"
+  | "deviceUnavailable"
+  | "deviceSwitchRequired"
+  | "exclusiveModeBlocked"
+  | "sampleRateConversionFailed"
+  | "emptyAudio"
+  | "alreadyCapturing"
+  | "notCapturing"
+  | "internal";
+
+export interface AudioCommandError {
+  kind: AudioCaptureErrorKind;
+  message: string;
+  recoverable: boolean;
+}
