@@ -25,6 +25,16 @@ MVP 目标是在 Windows 10/11 上通过系统音频录制生成英文原文与�
 # 克隆仓库
 git clone https://github.com/<your-username>/LinguaBridge.git
 cd LinguaBridge
+npm install
+
+# Realtime Gateway
+npm run dev:gateway
+
+# 真实桌面 App（Tauri 窗口）
+npm run dev:desktop
+
+# 仅前端网页预览（不会弹出桌面窗口）
+npm run dev:desktop:web
 ```
 
 开发前请先阅读 `AGENTS.md`，其中包含项目上下文、代码书写规范、外部文档检索要求和 Git 规范。

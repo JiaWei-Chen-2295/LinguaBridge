@@ -29,9 +29,12 @@ npm run typecheck
 npm run build
 npm run dev:gateway
 npm run dev:desktop
+npm run dev:desktop:web
 ```
 
-需要真实桌面客户端时，还需要安装 Tauri v2 的系统依赖、Rust 工具链和 Windows WebView2。
+- `npm run dev:desktop`：启动真实 Tauri 桌面客户端，会弹出主窗口和字幕浮窗。
+- `npm run dev:desktop:web`：只启动前端 Vite 预览，不会弹出桌面窗口。
+- 真实桌面客户端仍需要 Tauri v2 系统依赖、Rust 工具链和 Windows WebView2；当前仓库根脚本会在 Windows 上优先使用 GNU Rust toolchain 启动桌面端。
 
 ## 4. Phase 0 待验证
 

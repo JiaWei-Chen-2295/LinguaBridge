@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "node ./scripts/dev-server.mjs",
+    "dev:web": "vite",
     "typecheck": "tsc -b",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
