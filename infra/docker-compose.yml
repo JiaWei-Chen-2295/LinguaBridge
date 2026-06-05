@@ -1,0 +1,62 @@
+name: lingua-bridge-alpha
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: lingua_bridge
+      POSTGRES_USER: lingua_bridge
+      POSTGRES_PASSWORD: lingua_bridge_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - lingua_bridge_pg_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lingua_bridge -d lingua_bridge"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - lingua_bridge_redis_data:/data
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  gateway:
+    profiles: ["gateway"]
+    build:
+      context: ..
+      dockerfile: apps/gateway/Dockerfile
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 4318
+      LOG_LEVEL: info
+      WEBSOCKET_PATH: /realtime/sessions
+      WS_MAX_PAYLOAD_BYTES: 1048576
+      MOCK_SUBTITLE_DELAY_MS: 300
+      DEV_INVITE_CODE: ALPHA-DEV-2026
+      DEV_INVITE_QUOTA_MINUTES: 180
+      DATABASE_URL: postgresql://lingua_bridge:lingua_bridge_dev@postgres:5432/lingua_bridge
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "4318:4318"
+
+volumes:
+  lingua_bridge_pg_data:
+  lingua_bridge_redis_data:

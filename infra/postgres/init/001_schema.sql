@@ -1,0 +1,136 @@
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+CREATE TABLE IF NOT EXISTS users (
+  id text PRIMARY KEY,
+  email text UNIQUE,
+  phone text UNIQUE,
+  status text NOT NULL CHECK (status IN ('active', 'suspended')),
+  quota_minutes integer NOT NULL CHECK (quota_minutes >= 0),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS invite_batches (
+  id text PRIMARY KEY,
+  name text NOT NULL,
+  quota_minutes integer NOT NULL CHECK (quota_minutes >= 0),
+  max_uses integer NOT NULL CHECK (max_uses > 0),
+  expires_at timestamptz NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS invites (
+  id text PRIMARY KEY,
+  code_hash text NOT NULL UNIQUE,
+  batch_id text NOT NULL REFERENCES invite_batches(id),
+  status text NOT NULL CHECK (status IN ('available', 'activated', 'expired')),
+  activated_by text REFERENCES users(id),
+  activated_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS realtime_sessions (
+  id text PRIMARY KEY,
+  user_id text NOT NULL REFERENCES users(id),
+  source_lang text NOT NULL,
+  target_lang text NOT NULL,
+  status text NOT NULL CHECK (status IN ('active', 'completed', 'interrupted')),
+  device_label text,
+  started_at timestamptz NOT NULL,
+  ended_at timestamptz,
+  duration_ms integer NOT NULL DEFAULT 0 CHECK (duration_ms >= 0)
+);
+
+CREATE TABLE IF NOT EXISTS session_audio_objects (
+  id text PRIMARY KEY,
+  session_id text NOT NULL REFERENCES realtime_sessions(id) ON DELETE CASCADE,
+  oss_key text NOT NULL,
+  format text NOT NULL,
+  duration_ms integer NOT NULL DEFAULT 0 CHECK (duration_ms >= 0),
+  size_bytes bigint NOT NULL DEFAULT 0 CHECK (size_bytes >= 0),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS subtitle_segments (
+  session_id text NOT NULL REFERENCES realtime_sessions(id) ON DELETE CASCADE,
+  segment_id text NOT NULL,
+  start_ms integer NOT NULL CHECK (start_ms >= 0),
+  end_ms integer NOT NULL CHECK (end_ms >= start_ms),
+  source_text text NOT NULL,
+  target_text text NOT NULL,
+  status text NOT NULL CHECK (status IN ('draft', 'final', 'revised')),
+  revision integer NOT NULL CHECK (revision > 0),
+  terms_hit text[] NOT NULL DEFAULT ARRAY[]::text[],
+  latency_ms integer NOT NULL DEFAULT 0 CHECK (latency_ms >= 0),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (session_id, segment_id)
+);
+
+CREATE TABLE IF NOT EXISTS segment_revisions (
+  id text PRIMARY KEY,
+  session_id text NOT NULL REFERENCES realtime_sessions(id) ON DELETE CASCADE,
+  segment_id text NOT NULL,
+  revision integer NOT NULL CHECK (revision > 0),
+  status text NOT NULL CHECK (status IN ('draft', 'final', 'revised')),
+  source_text text NOT NULL,
+  target_text text NOT NULL,
+  reason text NOT NULL,
+  model_trace jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS usage_events (
+  id text PRIMARY KEY,
+  user_id text NOT NULL REFERENCES users(id),
+  session_id text REFERENCES realtime_sessions(id) ON DELETE SET NULL,
+  event_type text NOT NULL CHECK (
+    event_type IN (
+      'asr_audio_duration',
+      'mt_input_tokens',
+      'mt_output_tokens',
+      'revision_tokens',
+      'oss_audio_storage',
+      'session_realtime_duration',
+      'session_interruption'
+    )
+  ),
+  amount numeric NOT NULL CHECK (amount >= 0),
+  unit text NOT NULL CHECK (unit IN ('milliseconds', 'tokens', 'bytes', 'count')),
+  model text,
+  cost_estimate numeric,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_invites_batch_id ON invites(batch_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON realtime_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_segments_session_time ON subtitle_segments(session_id, start_ms);
+CREATE INDEX IF NOT EXISTS idx_revisions_session_segment ON segment_revisions(session_id, segment_id);
+CREATE INDEX IF NOT EXISTS idx_usage_events_user_created ON usage_events(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_usage_events_session_created ON usage_events(session_id, created_at);
+
+CREATE OR REPLACE FUNCTION prevent_usage_event_mutation()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RAISE EXCEPTION 'usage_events is append-only';
+END;
+$$;
+
+DROP TRIGGER IF EXISTS usage_events_no_update ON usage_events;
+CREATE TRIGGER usage_events_no_update
+BEFORE UPDATE OR DELETE ON usage_events
+FOR EACH ROW EXECUTE FUNCTION prevent_usage_event_mutation();
+
+INSERT INTO invite_batches (id, name, quota_minutes, max_uses, expires_at)
+VALUES ('batch_alpha_dev', 'Alpha dev seed', 180, 1, '2026-12-31T23:59:59Z')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO invites (id, code_hash, batch_id, status)
+VALUES (
+  'inv_alpha_dev',
+  encode(digest('ALPHA-DEV-2026', 'sha256'), 'hex'),
+  'batch_alpha_dev',
+  'available'
+)
+ON CONFLICT (id) DO NOTHING;
