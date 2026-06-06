@@ -73,6 +73,20 @@ export interface DeleteSessionResult {
   anonymizedUsageEvents: number;
 }
 
+export interface UserSessionHistoryItem {
+  id: string;
+  userId: string;
+  sourceLang: string;
+  targetLang: string;
+  status: SessionStatus;
+  startedAt: Date;
+  durationMs: number;
+  segmentCount: number;
+  storageBytes: number;
+  endedAt?: Date;
+  deviceLabel?: string;
+}
+
 export type MaybePromise<T> = T | Promise<T>;
 
 export interface GatewayStore {
@@ -89,7 +103,9 @@ export interface GatewayStore {
   recordSessionAudioObject(
     input: RecordSessionAudioObjectInput
   ): MaybePromise<SessionAudioObject | undefined>;
+  listUserSessions(userId: string): MaybePromise<UserSessionHistoryItem[]>;
   listTermEntries(userId: string): MaybePromise<TermEntry[]>;
+  resolveActivatedInviteUser(inviteCode: string): MaybePromise<User | undefined>;
   appendUsageEvent(input: UsageEventInput): MaybePromise<UsageEvent>;
   getUsageSummary(userId: string): MaybePromise<UsageSummary>;
   hasUser(userId: string): MaybePromise<boolean>;

@@ -32,7 +32,8 @@ import type {
   RecordSessionAudioObjectInput,
   ResolveSessionUserInput,
   ResolveSessionUserResult,
-  StoreSeedConfig
+  StoreSeedConfig,
+  UserSessionHistoryItem
 } from "./store";
 
 export interface PgStoreConfig {
@@ -81,6 +82,11 @@ interface SessionRow extends QueryResultRow {
   started_at: Date;
   ended_at: Date | null;
   duration_ms: number;
+}
+
+interface SessionHistoryRow extends SessionRow {
+  segment_count: string | number;
+  storage_bytes: string | number;
 }
 
 interface AudioObjectRow extends QueryResultRow {
@@ -518,6 +524,37 @@ export class PgStore implements GatewayStore {
     return result.rows.map(toTermEntry);
   }
 
+  public async resolveActivatedInviteUser(inviteCode: string): Promise<User | undefined> {
+    return this.findActiveUserByInviteCode(inviteCode);
+  }
+
+  public async listUserSessions(userId: string): Promise<UserSessionHistoryItem[]> {
+    const result = await this.pool.query<SessionHistoryRow>(
+      `
+        SELECT
+          s.*,
+          COALESCE(seg.segment_count, 0) AS segment_count,
+          COALESCE(audio.storage_bytes, 0) AS storage_bytes
+        FROM realtime_sessions s
+        LEFT JOIN (
+          SELECT session_id, COUNT(*) AS segment_count
+          FROM subtitle_segments
+          GROUP BY session_id
+        ) seg ON seg.session_id = s.id
+        LEFT JOIN (
+          SELECT session_id, SUM(size_bytes) AS storage_bytes
+          FROM session_audio_objects
+          GROUP BY session_id
+        ) audio ON audio.session_id = s.id
+        WHERE s.user_id = $1
+        ORDER BY s.started_at DESC, s.id DESC
+      `,
+      [userId]
+    );
+
+    return result.rows.map(toSessionHistoryItem);
+  }
+
   public async getUsageSummary(userId: string): Promise<UsageSummary> {
     return this.getUsageSummaryFor(this.pool, userId);
   }
@@ -902,6 +939,15 @@ function toSession(row: SessionRow): RealtimeSession {
     session.deviceLabel = row.device_label;
   }
   return session;
+}
+
+function toSessionHistoryItem(row: SessionHistoryRow): UserSessionHistoryItem {
+  const session = toSession(row);
+  return {
+    ...session,
+    segmentCount: Number(row.segment_count),
+    storageBytes: Number(row.storage_bytes)
+  };
 }
 
 function toAudioObject(row: AudioObjectRow): SessionAudioObject {

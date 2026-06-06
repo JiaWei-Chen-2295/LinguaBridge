@@ -30,7 +30,8 @@ import type {
   RecordSessionAudioObjectInput,
   ResolveSessionUserInput,
   ResolveSessionUserResult,
-  StoreSeedConfig
+  StoreSeedConfig,
+  UserSessionHistoryItem
 } from "./store";
 
 export class InMemoryStore implements GatewayStore {
@@ -256,6 +257,35 @@ export class InMemoryStore implements GatewayStore {
 
   public listTermEntries(_userId: string): TermEntry[] {
     return [];
+  }
+
+  public resolveActivatedInviteUser(inviteCode: string): User | undefined {
+    return this.findActiveUserByInviteCode(inviteCode);
+  }
+
+  public listUserSessions(userId: string): UserSessionHistoryItem[] {
+    return Array.from(this.sessions.values())
+      .filter((session) => session.userId === userId)
+      .sort((left, right) => right.startedAt.getTime() - left.startedAt.getTime())
+      .map((session) => ({
+        id: session.id,
+        userId: session.userId,
+        sourceLang: session.sourceLang,
+        targetLang: session.targetLang,
+        status: session.status,
+        startedAt: session.startedAt,
+        durationMs: session.durationMs,
+        ...(session.endedAt === undefined ? {} : { endedAt: session.endedAt }),
+        ...(session.deviceLabel === undefined
+          ? {}
+          : { deviceLabel: session.deviceLabel }),
+        segmentCount: Array.from(this.segments.values()).filter(
+          (segment) => segment.sessionId === session.id
+        ).length,
+        storageBytes: this.audioObjects
+          .filter((audioObject) => audioObject.sessionId === session.id)
+          .reduce((total, audioObject) => total + audioObject.sizeBytes, 0)
+      }));
   }
 
   public appendUsageEvent(input: UsageEventInput): UsageEvent {

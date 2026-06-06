@@ -1,10 +1,12 @@
 import fastify, { type FastifyInstance } from "fastify";
 import type { GatewayConfig } from "./config";
 import { loadConfig } from "./config";
+import { registerCorsSupport } from "./http/cors";
 import { registerExportRoutes } from "./http/export.routes";
 import { registerHealthRoutes } from "./http/health.routes";
 import { registerInviteRoutes } from "./http/invite.routes";
 import { registerSessionRoutes } from "./http/session.routes";
+import { registerTermRoutes } from "./http/term.routes";
 import { registerUsageRoutes } from "./http/usage.routes";
 import { registerRealtimeGateway } from "./realtime/realtime-gateway";
 import { createInMemoryStore } from "./storage/in-memory-store";
@@ -35,9 +37,11 @@ export async function buildGatewayApp(
   await objectStorage.ensureReady();
   const artifactRecorder = new SessionArtifactRecorder(objectStorage);
 
+  registerCorsSupport(app);
   registerHealthRoutes(app, config);
   registerInviteRoutes(app, store);
   registerUsageRoutes(app, store);
+  registerTermRoutes(app, store);
   registerExportRoutes(app, store);
   registerSessionRoutes(app, { store, objectStorage, artifactRecorder });
   registerRealtimeGateway(app, { config, store, artifactRecorder });
