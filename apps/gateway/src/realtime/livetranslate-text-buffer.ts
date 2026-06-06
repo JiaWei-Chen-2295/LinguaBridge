@@ -94,7 +94,13 @@ export class LiveTranslateTextBuffer {
     }
 
     if (this.lastItemId !== undefined) {
-      return this.lastItemId;
+      const lastSegment = this.segments.get(this.lastItemId);
+      if (
+        lastSegment !== undefined &&
+        !(lastSegment.sourceCompleted && lastSegment.targetCompleted)
+      ) {
+        return this.lastItemId;
+      }
     }
 
     this.generatedItemIndex += 1;
@@ -194,6 +200,14 @@ function mergeStreamingText(
     return { text: previousText, shortTextIgnored: false };
   }
 
+  const overlapLength = suffixPrefixOverlapLength(previousText, incomingText);
+  if (overlapLength > 0) {
+    return {
+      text: `${previousText}${incomingText.slice(overlapLength)}`,
+      shortTextIgnored: false
+    };
+  }
+
   return {
     text: `${previousText}${
       needsSeparator(previousText, incomingText) ? " " : ""
@@ -204,6 +218,17 @@ function mergeStreamingText(
 
 function normalizeText(value: string): string {
   return value.replace(/\s+/g, " ").trim();
+}
+
+function suffixPrefixOverlapLength(left: string, right: string): number {
+  const maxLength = Math.min(left.length, right.length);
+  for (let length = maxLength; length > 0; length -= 1) {
+    if (left.endsWith(right.slice(0, length))) {
+      return length;
+    }
+  }
+
+  return 0;
 }
 
 function needsSeparator(left: string, right: string): boolean {

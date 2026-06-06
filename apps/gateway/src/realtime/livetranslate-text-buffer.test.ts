@@ -26,6 +26,48 @@ test("LiveTranslateTextBuffer accumulates target chunks into one sentence", () =
   assert.equal(updated?.changed, true);
 });
 
+test("LiveTranslateTextBuffer merges CJK suffix-prefix overlap", () => {
+  const buffer = new LiveTranslateTextBuffer();
+
+  buffer.apply({
+    itemId: "item_1",
+    kind: "target",
+    phase: "draft",
+    text: "我们正在生成",
+    receivedAtMs: 100
+  });
+  const updated = buffer.apply({
+    itemId: "item_1",
+    kind: "target",
+    phase: "draft",
+    text: "生成中文同传。",
+    receivedAtMs: 200
+  });
+
+  assert.equal(updated?.targetText, "我们正在生成中文同传。");
+});
+
+test("LiveTranslateTextBuffer merges English suffix-prefix overlap", () => {
+  const buffer = new LiveTranslateTextBuffer();
+
+  buffer.apply({
+    itemId: "item_1",
+    kind: "source",
+    phase: "draft",
+    text: "Hello wor",
+    receivedAtMs: 100
+  });
+  const updated = buffer.apply({
+    itemId: "item_1",
+    kind: "source",
+    phase: "draft",
+    text: "world",
+    receivedAtMs: 200
+  });
+
+  assert.equal(updated?.sourceText, "Hello world");
+});
+
 test("LiveTranslateTextBuffer ignores shorter non-final target rollback", () => {
   const buffer = new LiveTranslateTextBuffer();
 
@@ -147,4 +189,34 @@ test("LiveTranslateTextBuffer keeps missing item_id events on the active item", 
   assert.equal(updated?.itemId, "item_1");
   assert.equal(updated?.sourceText, "We are");
   assert.equal(updated?.targetText, "我们正在");
+});
+
+test("LiveTranslateTextBuffer starts a new item after missing item_id follows final segment", () => {
+  const buffer = new LiveTranslateTextBuffer();
+
+  buffer.apply({
+    itemId: "item_1",
+    kind: "source",
+    phase: "completed",
+    text: "We are generating Chinese interpretation.",
+    receivedAtMs: 100
+  });
+  buffer.apply({
+    itemId: "item_1",
+    kind: "target",
+    phase: "completed",
+    text: "我们正在生成中文同传。",
+    receivedAtMs: 200
+  });
+  const updated = buffer.apply({
+    kind: "target",
+    phase: "draft",
+    text: "下一句。",
+    receivedAtMs: 300
+  });
+
+  assert.notEqual(updated?.itemId, "item_1");
+  assert.equal(updated?.status, "draft");
+  assert.equal(updated?.sourceText, "");
+  assert.equal(updated?.targetText, "下一句。");
 });
