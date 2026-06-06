@@ -1250,17 +1250,42 @@ button {
 }
 
 .caption-stage {
-  display: grid;
-  align-content: center;
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  justify-content: flex-end;
   gap: 10px;
   padding: 16px 20px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+
+.caption-stage::-webkit-scrollbar {
+  display: none;
 }
 
 .caption-line {
   display: grid;
+  flex-shrink: 0;
+  width: 100%;
   gap: 4px;
   min-height: 48px;
   line-height: 1.22;
+}
+
+.caption-line:first-of-type:not(:last-of-type) {
+  opacity: 0.64;
+}
+
+.caption-line:last-of-type p {
+  text-shadow: 0 0 24px rgba(255, 255, 255, 0.16);
+}
+
+.caption-end {
+  width: 100%;
+  min-height: 1px;
+  flex-shrink: 0;
 }
 
 .caption-line p,
