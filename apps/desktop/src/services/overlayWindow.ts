@@ -54,19 +54,28 @@ export async function listenToOverlayVisibility(
 }
 
 export function getOverlayWindowFeedback(error: unknown): string {
-  if (error instanceof Error) {
-    if (
-      error.message.includes("reading 'invoke'") ||
-      error.message.includes("transformCallback") ||
-      error.message.includes("window.__TAURI__")
-    ) {
-      return "当前是浏览器预览环境，浮窗控制需要在 Tauri 桌面端中运行。";
-    }
+  const message = overlayErrorMessage(error);
+  if (message === undefined) {
+    return "浮窗控制失败，请重新打开悬浮窗。";
+  }
 
-    if (error.message.includes("not allowed") || error.message.includes("denied")) {
-      return "浮窗控制权限未配置，请重启桌面端后重试。";
-    }
+  if (
+    message.includes("reading 'invoke'") ||
+    message.includes("transformCallback") ||
+    message.includes("window.__TAURI__")
+  ) {
+    return "当前是浏览器预览环境，浮窗控制需要在 Tauri 桌面端中运行。";
+  }
 
+  if (message.includes("not allowed") || message.includes("denied")) {
+    return "浮窗控制权限未配置，请重启桌面端后重试。";
+  }
+
+  return `悬浮窗控制失败：${message}`;
+}
+
+function overlayErrorMessage(error: unknown): string | undefined {
+  if (error instanceof Error && error.message.length > 0) {
     return error.message;
   }
 
@@ -74,11 +83,11 @@ export function getOverlayWindowFeedback(error: unknown): string {
     return error;
   }
 
-  if (isRecord(error) && typeof error.message === "string") {
+  if (isRecord(error) && typeof error.message === "string" && error.message.length > 0) {
     return error.message;
   }
 
-  return "浮窗控制失败，请重新打开悬浮窗。";
+  return undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

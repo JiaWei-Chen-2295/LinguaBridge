@@ -99,6 +99,7 @@ export function MainWindow(): ReactElement {
   const activeSessionIdRef = useRef<string | null>(null);
   const audioSendingEnabledRef = useRef(false);
   const interpretationAudioPlayerRef = useRef<InterpretationAudioPlayer | null>(null);
+  const subtitleStreamEndRef = useRef<HTMLDivElement | null>(null);
 
   const audioErrored = sessionMode === "error" || captureStatus?.state === "error";
   const audioReady = !audioErrored && audioCapabilities !== null;
@@ -247,6 +248,13 @@ export function MainWindow(): ReactElement {
 
   useEffect(() => {
     void publishOverlaySubtitles(liveSubtitleSegments).catch(() => undefined);
+  }, [liveSubtitleSegments]);
+
+  useEffect(() => {
+    subtitleStreamEndRef.current?.scrollIntoView({
+      block: "end",
+      behavior: liveSubtitleSegments.length > 2 ? "smooth" : "auto"
+    });
   }, [liveSubtitleSegments]);
 
   function activateInvite(): void {
@@ -629,6 +637,7 @@ export function MainWindow(): ReactElement {
                   <SubtitlePreview key={segment.segmentId} segment={segment} />
                 ))
               )}
+              <div className="subtitle-stream-end" ref={subtitleStreamEndRef} aria-hidden="true" />
             </section>
 
             {feedback ? (

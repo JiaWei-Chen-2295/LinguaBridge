@@ -11,7 +11,7 @@ import {
   Unlock
 } from "lucide-react";
 import type { MouseEvent, ReactElement } from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { IconButton } from "../components/IconButton";
 import { StatusPill } from "../components/StatusPill";
@@ -19,6 +19,7 @@ import {
   listenToOverlaySubtitles,
   readCachedOverlaySubtitles
 } from "../services/overlaySubtitle";
+import { selectOverlaySegments } from "../services/overlaySubtitleSelection";
 import { getOverlayWindowFeedback, hideOverlayWindow } from "../services/overlayWindow";
 import type { OverlayLineMode, SubtitleSegmentEvent } from "../types/protocol";
 
@@ -31,6 +32,7 @@ export function OverlayWindow(): ReactElement {
   const [visibleSegments, setVisibleSegments] = useState<SubtitleSegmentEvent[]>(() =>
     readCachedOverlaySubtitles()
   );
+  const captionEndRef = useRef<HTMLDivElement | null>(null);
   const [syncFeedback, setSyncFeedback] = useState("等待主窗口实时字幕。");
 
   const synced = visibleSegments.length > 0;
@@ -42,7 +44,7 @@ export function OverlayWindow(): ReactElement {
     async function subscribeToSubtitles(): Promise<void> {
       try {
         const unlisten = await listenToOverlaySubtitles((payload) => {
-          const nextSegments = payload.segments.slice(-2);
+          const nextSegments = selectOverlaySegments(payload.segments);
           setVisibleSegments(nextSegments);
           setSyncFeedback(
             nextSegments.length > 0
@@ -71,6 +73,13 @@ export function OverlayWindow(): ReactElement {
       unlistenSubtitles?.();
     };
   }, []);
+
+  useEffect(() => {
+    captionEndRef.current?.scrollIntoView({
+      block: "end",
+      behavior: visibleSegments.length > 1 ? "smooth" : "auto"
+    });
+  }, [fontSize, lineMode, visibleSegments]);
 
   useEffect(() => {
     if (visibleSegments.length > 0) {
@@ -154,6 +163,7 @@ export function OverlayWindow(): ReactElement {
             </article>
           ))
         )}
+        <div className="caption-end" ref={captionEndRef} aria-hidden="true" />
       </section>
 
       {showChrome ? (
