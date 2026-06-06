@@ -304,6 +304,66 @@ test("LiveTranslateTextBuffer finalizes after source and target completion", () 
   assert.equal(finalSegment?.targetCompleted, true);
 });
 
+test("LiveTranslateTextBuffer ignores late target draft after target completion", () => {
+  const buffer = new LiveTranslateTextBuffer();
+
+  buffer.apply({
+    itemId: "item_1",
+    kind: "source",
+    phase: "completed",
+    text: "A",
+    receivedAtMs: 100
+  });
+  buffer.apply({
+    itemId: "item_1",
+    kind: "target",
+    phase: "completed",
+    text: "甲",
+    receivedAtMs: 200
+  });
+  const updated = buffer.apply({
+    itemId: "item_1",
+    kind: "target",
+    phase: "draft",
+    text: "乙",
+    receivedAtMs: 300
+  });
+
+  assert.equal(updated?.targetText, "甲");
+  assert.equal(updated?.status, "final");
+  assert.equal(updated?.changed, false);
+});
+
+test("LiveTranslateTextBuffer ignores late source draft after source completion", () => {
+  const buffer = new LiveTranslateTextBuffer();
+
+  buffer.apply({
+    itemId: "item_1",
+    kind: "source",
+    phase: "completed",
+    text: "A",
+    receivedAtMs: 100
+  });
+  buffer.apply({
+    itemId: "item_1",
+    kind: "target",
+    phase: "completed",
+    text: "甲",
+    receivedAtMs: 200
+  });
+  const updated = buffer.apply({
+    itemId: "item_1",
+    kind: "source",
+    phase: "draft",
+    text: "B",
+    receivedAtMs: 300
+  });
+
+  assert.equal(updated?.sourceText, "A");
+  assert.equal(updated?.status, "final");
+  assert.equal(updated?.changed, false);
+});
+
 test("LiveTranslateTextBuffer keeps missing item_id events on the active item", () => {
   const buffer = new LiveTranslateTextBuffer();
 

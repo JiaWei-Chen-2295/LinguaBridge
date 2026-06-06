@@ -60,6 +60,14 @@ export class LiveTranslateTextBuffer {
     this.lastItemId = itemId;
 
     const segment = this.segmentFor(itemId, update.receivedAtMs);
+    const sideCompleted =
+      update.kind === "source"
+        ? segment.sourceCompleted
+        : segment.targetCompleted;
+    if (update.phase !== "completed" && sideCompleted) {
+      return snapshotSegment(segment, false, false);
+    }
+
     const currentText =
       update.kind === "source" ? segment.sourceText : segment.targetText;
     const merged =
