@@ -76,6 +76,9 @@ CREATE TABLE IF NOT EXISTS term_entries (
   target text,
   mode text NOT NULL CHECK (mode IN ('keep_source', 'fixed_translation')),
   aliases text[] NOT NULL DEFAULT ARRAY[]::text[],
+  domain text,
+  kind text,
+  priority integer NOT NULL DEFAULT 0,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   CHECK (
@@ -83,6 +86,11 @@ CREATE TABLE IF NOT EXISTS term_entries (
     OR (mode = 'fixed_translation' AND target IS NOT NULL)
   )
 );
+
+ALTER TABLE term_entries
+  ADD COLUMN IF NOT EXISTS domain text,
+  ADD COLUMN IF NOT EXISTS kind text,
+  ADD COLUMN IF NOT EXISTS priority integer NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS segment_revisions (
   id text PRIMARY KEY,

@@ -2,6 +2,10 @@ import type { ModelTrace } from "@lingua-bridge/protocol";
 import type { FastifyBaseLogger } from "fastify";
 import { WebSocket } from "ws";
 import type { AlibabaCloudModelConfig } from "../config";
+import {
+  protectTechnicalEntities,
+  type ProtectedTechnicalEntity
+} from "./terms";
 import type {
   AsrTextEvent,
   RealtimeAsrProvider,
@@ -463,14 +467,10 @@ export class AlibabaCloudSubtitleTextProvider implements SubtitleTextProvider {
   public constructor(private readonly input: AlibabaCloudTextProviderInput) {}
 
   public async translate(input: TranslateInput): Promise<TextModelResult> {
+    const protectedEntities = protectTechnicalEntities(input.sourceText);
     const response = await this.chatCompletion({
       model: this.input.config.mtModel,
-      messages: [
-        {
-          role: "user",
-          content: input.sourceText
-        }
-      ],
+      messages: buildComputerCourseTranslationMessages(input, protectedEntities),
       translation_options: {
         source_lang: "English",
         target_lang: "Chinese"
@@ -483,7 +483,8 @@ export class AlibabaCloudSubtitleTextProvider implements SubtitleTextProvider {
         targetLength: text.length,
         promptTokens: response.usage?.prompt_tokens,
         completionTokens: response.usage?.completion_tokens,
-        glossaryLength: input.glossary.length
+        glossaryLength: input.glossary.length,
+        protectedEntities: protectedEntities.length
       },
       "Qwen-MT translation completed"
     );
@@ -567,6 +568,42 @@ export class AlibabaCloudSubtitleTextProvider implements SubtitleTextProvider {
 
     return (await response.json()) as ChatCompletionResponse;
   }
+}
+
+function buildComputerCourseTranslationMessages(
+  input: TranslateInput,
+  protectedEntities: ProtectedTechnicalEntity[]
+): Array<{ role: "system" | "user"; content: string }> {
+  const protectedEntityLines =
+    protectedEntities.length === 0
+      ? "No protected technical entities."
+      : protectedEntities
+          .map((entity) => `- Keep "${entity.text}" exactly as written.`)
+          .join("\n");
+
+  return [
+    {
+      role: "system",
+      content:
+        "You translate subtitles for a computer programming course. Output only concise Simplified Chinese subtitle text. Preserve code identifiers, method names, CLI commands, file names, package names, API names, acronyms, and product names exactly. Follow glossary constraints strictly."
+    },
+    {
+      role: "user",
+      content: [
+        `Source language: ${input.sourceLang}`,
+        `Target language: ${input.targetLang}`,
+        "",
+        "Source text:",
+        input.sourceText,
+        "",
+        "Glossary constraints:",
+        input.glossary,
+        "",
+        "Protected technical entities:",
+        protectedEntityLines
+      ].join("\n")
+    }
+  ];
 }
 
 function parseServerEvent(message: string): QwenAsrServerEvent | undefined {

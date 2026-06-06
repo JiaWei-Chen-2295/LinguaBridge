@@ -11,8 +11,8 @@ import { WebSocket } from "ws";
 import type { ModelConfig } from "../config";
 import {
   applyTermPolicy,
-  findTermMatches,
-  mergeTermEntries
+  mergeTermEntries,
+  normalizeTechnicalSourceText
 } from "./terms";
 import type {
   RealtimeAudioFramePayload,
@@ -281,7 +281,10 @@ export class AlibabaCloudLiveTranslateSession {
     event: LiveTranslateGenericEvent,
     finalized: boolean
   ): Promise<void> {
-    const sourceText = readSourceText(event);
+    const sourceText = normalizeTechnicalSourceText(
+      readSourceText(event),
+      this.termEntries
+    );
     if (sourceText.length === 0) {
       return;
     }
@@ -425,7 +428,7 @@ export class AlibabaCloudLiveTranslateSession {
           translation: {
             language: "zh",
             corpus: {
-              phrases: glossaryPhrases(this.termEntries)
+              phrases: buildLiveTranslateGlossaryPhrases(this.termEntries)
             }
           }
         }
@@ -505,13 +508,18 @@ function readTargetText(event: LiveTranslateGenericEvent): string {
   return `${event.transcript ?? ""}${event.stash ?? ""}`.trim();
 }
 
-function glossaryPhrases(entries: TermEntry[]): Record<string, string> {
+export function buildLiveTranslateGlossaryPhrases(
+  entries: TermEntry[]
+): Record<string, string> {
   const phrases: Record<string, string> = {};
-  for (const match of findTermMatches(
-    entries.map((entry) => entry.source).join("\n"),
-    entries
-  )) {
-    phrases[match.entry.source] = match.replacement;
+  for (const entry of entries) {
+    const replacement =
+      entry.mode === "fixed_translation" ? entry.target ?? entry.source : entry.source;
+    for (const phrase of [entry.source, ...entry.aliases]) {
+      if (phrase.trim().length > 0) {
+        phrases[phrase] = replacement;
+      }
+    }
   }
   return phrases;
 }

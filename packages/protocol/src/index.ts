@@ -309,6 +309,26 @@ export type UsageSummary = {
   currentMonthStartedAt: string;
 };
 
+export type TermEntryDomain =
+  | "general_cs"
+  | "cloud_native"
+  | "frontend"
+  | "backend"
+  | "database"
+  | "ai_ml"
+  | "devops"
+  | "security"
+  | "systems";
+
+export type TermEntryKind =
+  | "term"
+  | "product"
+  | "acronym"
+  | "command"
+  | "code_identifier"
+  | "protocol"
+  | "file_format";
+
 export type TermEntry = {
   id: string;
   userId?: string;
@@ -316,6 +336,9 @@ export type TermEntry = {
   target?: string;
   mode: "keep_source" | "fixed_translation";
   aliases: string[];
+  domain?: TermEntryDomain;
+  kind?: TermEntryKind;
+  priority?: number;
 };
 
 export type SessionRecord = {

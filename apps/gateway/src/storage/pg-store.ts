@@ -141,6 +141,9 @@ interface TermEntryRow extends QueryResultRow {
   target: string | null;
   mode: TermEntry["mode"];
   aliases: string[];
+  domain: NonNullable<TermEntry["domain"]> | null;
+  kind: NonNullable<TermEntry["kind"]> | null;
+  priority: number;
 }
 
 interface UsageSumRow extends QueryResultRow {
@@ -157,6 +160,7 @@ export class PgStore implements GatewayStore {
 
   public async ensureReady(): Promise<void> {
     await this.pool.query("SELECT 1");
+    await runPgCompatibilityMigration(this.pool);
     await this.seedDevInvite();
   }
 
@@ -503,10 +507,10 @@ export class PgStore implements GatewayStore {
   public async listTermEntries(userId: string): Promise<TermEntry[]> {
     const result = await this.pool.query<TermEntryRow>(
       `
-        SELECT id, user_id, source, target, mode, aliases
+        SELECT id, user_id, source, target, mode, aliases, domain, kind, priority
         FROM term_entries
         WHERE user_id IS NULL OR user_id = $1
-        ORDER BY user_id NULLS FIRST, lower(source)
+        ORDER BY user_id NULLS FIRST, priority DESC, lower(source)
       `,
       [userId]
     );
@@ -809,6 +813,45 @@ export async function createPgStore(config: PgStoreConfig): Promise<PgStore> {
   return store;
 }
 
+export function pgCompatibilityMigrationStatements(): string[] {
+  return [
+    `
+      ALTER TABLE term_entries
+        ADD COLUMN IF NOT EXISTS domain text,
+        ADD COLUMN IF NOT EXISTS kind text,
+        ADD COLUMN IF NOT EXISTS priority integer NOT NULL DEFAULT 0
+    `,
+    `
+      ALTER TABLE usage_events
+        DROP CONSTRAINT IF EXISTS usage_events_event_type_check
+    `,
+    `
+      ALTER TABLE usage_events
+        ADD CONSTRAINT usage_events_event_type_check
+        CHECK (
+          event_type IN (
+            'asr_audio_duration',
+            'mt_input_tokens',
+            'mt_output_tokens',
+            'revision_tokens',
+            'oss_audio_storage',
+            'interpretation_audio_duration',
+            'interpretation_audio_storage',
+            'session_realtime_duration',
+            'session_metadata',
+            'session_interruption'
+          )
+        )
+    `
+  ];
+}
+
+async function runPgCompatibilityMigration(client: DbClient): Promise<void> {
+  for (const statement of pgCompatibilityMigrationStatements()) {
+    await client.query(statement);
+  }
+}
+
 function toUser(row: UserRow): User {
   const user: User = {
     id: row.id,
@@ -885,6 +928,15 @@ function toTermEntry(row: TermEntryRow): TermEntry {
   }
   if (row.target !== null) {
     entry.target = row.target;
+  }
+  if (row.domain !== null) {
+    entry.domain = row.domain;
+  }
+  if (row.kind !== null) {
+    entry.kind = row.kind;
+  }
+  if (row.priority > 0) {
+    entry.priority = row.priority;
   }
   return entry;
 }

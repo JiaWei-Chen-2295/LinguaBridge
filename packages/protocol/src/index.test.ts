@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { isRealtimeClientMessage, PROTOCOL_VERSION, type RealtimeClientMessage } from "./index.js";
+import {
+  isRealtimeClientMessage,
+  PROTOCOL_VERSION,
+  type RealtimeClientMessage,
+  type TermEntry
+} from "./index.js";
 
 test("accepts a valid session.start message", () => {
   const message: RealtimeClientMessage = {
@@ -142,4 +147,20 @@ test("accepts a valid audio.frame message", () => {
   };
 
   assert.equal(isRealtimeClientMessage(message), true);
+});
+
+test("term entries can describe computer-course domain and entity kind", () => {
+  const term: TermEntry = {
+    id: "builtin_k8s",
+    source: "Kubernetes",
+    mode: "keep_source",
+    aliases: ["K8s", "k eight s", "kates"],
+    domain: "cloud_native",
+    kind: "product",
+    priority: 100
+  };
+
+  assert.equal(term.domain, "cloud_native");
+  assert.equal(term.kind, "product");
+  assert.equal(term.priority, 100);
 });
