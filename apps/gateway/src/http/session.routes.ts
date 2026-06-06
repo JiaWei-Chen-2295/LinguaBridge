@@ -7,6 +7,11 @@ interface SessionParams {
   sessionId: string;
 }
 
+interface SessionListQuery {
+  userId?: string;
+  inviteCode?: string;
+}
+
 export interface SessionRoutesDeps {
   store: GatewayStore;
   objectStorage: ObjectStorage;
@@ -17,6 +22,25 @@ export function registerSessionRoutes(
   app: FastifyInstance,
   deps: SessionRoutesDeps
 ): void {
+  app.get<{ Querystring: SessionListQuery }>("/sessions", async (request, reply) => {
+    const user = await resolveQueryUser(deps.store, request.query);
+    if (user === "missing_identity") {
+      return reply.code(400).send({
+        error: "identity_required",
+        message: "A userId or inviteCode query parameter is required."
+      });
+    }
+
+    if (user === undefined) {
+      return reply.code(404).send({
+        error: "user_not_found",
+        message: "Sessions can only be queried for an activated user or invite."
+      });
+    }
+
+    return deps.store.listUserSessions(user.id);
+  });
+
   app.delete<{ Params: SessionParams }>(
     "/sessions/:sessionId",
     async (request, reply) => {
@@ -56,4 +80,21 @@ export function registerSessionRoutes(
       };
     }
   );
+}
+
+async function resolveQueryUser(
+  store: GatewayStore,
+  query: SessionListQuery
+): Promise<{ id: string } | "missing_identity" | undefined> {
+  const userId = query.userId?.trim();
+  if (userId !== undefined && userId.length > 0) {
+    return (await store.hasUser(userId)) ? { id: userId } : undefined;
+  }
+
+  const inviteCode = query.inviteCode?.trim();
+  if (inviteCode !== undefined && inviteCode.length > 0) {
+    return store.resolveActivatedInviteUser(inviteCode);
+  }
+
+  return "missing_identity";
 }

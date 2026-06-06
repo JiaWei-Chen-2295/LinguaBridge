@@ -28,7 +28,6 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { IconButton } from "../components/IconButton";
 import { MetricTile } from "../components/MetricTile";
 import { StatusPill } from "../components/StatusPill";
-import { glossaryEntries, historySessions, usageSummary } from "../data/mockData";
 import { formatDurationRange, formatMinutes, formatPercent } from "../lib/format";
 import {
   getAudioCaptureCapabilities,
@@ -51,6 +50,15 @@ import {
   InterpretationAudioPlayer,
   type InterpretationAudioPlayerSnapshot
 } from "../services/interpretationAudioPlayer";
+import {
+  loadDesktopGlossary,
+  loadDesktopHistory,
+  loadDesktopUsage,
+  type DesktopDataIdentity,
+  type DesktopSessionSummary,
+  type DesktopTermEntry,
+  type DesktopUsageSummary
+} from "../services/desktopApi";
 import { RealtimeGatewayConnection } from "../services/realtimeGateway";
 import type {
   AudioCaptureCapabilities,
@@ -66,6 +74,12 @@ type MainTab = "session" | "history" | "usage" | "glossary";
 type SessionMode = "idle" | "capturing" | "paused" | "error";
 type SetupStepState = "waiting" | "current" | "complete" | "active" | "error";
 type EchoAvoidance = InterpretationOptions["echoAvoidance"];
+
+interface PanelLoadState<T> {
+  data: T;
+  loading: boolean;
+  error: string | null;
+}
 
 const invitePattern = /^[A-Z0-9-]{6,32}$/;
 const EMPTY_INTERPRETATION_AUDIO_STATUS: InterpretationAudioPlayerSnapshot = {
@@ -94,6 +108,23 @@ export function MainWindow(): ReactElement {
   const [liveSubtitleSegments, setLiveSubtitleSegments] = useState<SubtitleSegmentEvent[]>([]);
   const [interpretationAudioStatus, setInterpretationAudioStatus] =
     useState<InterpretationAudioPlayerSnapshot>(EMPTY_INTERPRETATION_AUDIO_STATUS);
+  const [userId, setUserId] = useState<string | null>(null);
+  const [historyState, setHistoryState] = useState<PanelLoadState<DesktopSessionSummary[]>>({
+    data: [],
+    loading: false,
+    error: null
+  });
+  const [usageState, setUsageState] = useState<PanelLoadState<DesktopUsageSummary | null>>({
+    data: null,
+    loading: false,
+    error: null
+  });
+  const [glossaryState, setGlossaryState] = useState<PanelLoadState<DesktopTermEntry[]>>({
+    data: [],
+    loading: false,
+    error: null
+  });
+  const [panelRefreshKey, setPanelRefreshKey] = useState(0);
   const realtimeConnectionRef = useRef<RealtimeGatewayConnection | null>(null);
   const audioFrameUnlistenRef = useRef<(() => void) | null>(null);
   const activeSessionIdRef = useRef<string | null>(null);
@@ -171,6 +202,20 @@ export function MainWindow(): ReactElement {
     audioCapabilities === null
       ? null
       : chooseInterpretationStartPolicy(audioCapabilities, echoRiskAccepted);
+  const panelDataIdentity = useMemo<DesktopDataIdentity | null>(() => {
+    if (userId !== null) {
+      return { userId };
+    }
+
+    if (inviteActivated) {
+      const normalizedInviteCode = inviteCode.trim().toUpperCase();
+      if (normalizedInviteCode.length > 0) {
+        return { inviteCode: normalizedInviteCode };
+      }
+    }
+
+    return null;
+  }, [inviteActivated, inviteCode, userId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -249,6 +294,93 @@ export function MainWindow(): ReactElement {
   useEffect(() => {
     void publishOverlaySubtitles(liveSubtitleSegments).catch(() => undefined);
   }, [liveSubtitleSegments]);
+
+  useEffect(() => {
+    if (panelDataIdentity === null) {
+      setHistoryState({ data: [], loading: false, error: null });
+      setUsageState({ data: null, loading: false, error: null });
+      setGlossaryState({ data: [], loading: true, error: null });
+
+      let cancelled = false;
+      void loadDesktopGlossary()
+        .then((terms) => {
+          if (!cancelled) {
+            setGlossaryState({ data: terms, loading: false, error: null });
+          }
+        })
+        .catch((error: unknown) => {
+          if (!cancelled) {
+            setGlossaryState({
+              data: [],
+              loading: false,
+              error: formatPanelError(error)
+            });
+          }
+        });
+
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    let cancelled = false;
+
+    setHistoryState({ data: [], loading: true, error: null });
+    setUsageState({ data: null, loading: true, error: null });
+    setGlossaryState({ data: [], loading: true, error: null });
+
+    void loadDesktopHistory(panelDataIdentity)
+      .then((sessions) => {
+        if (!cancelled) {
+          setHistoryState({ data: sessions, loading: false, error: null });
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setHistoryState({
+            data: [],
+            loading: false,
+            error: formatPanelError(error)
+          });
+        }
+      });
+
+    void loadDesktopUsage(panelDataIdentity)
+      .then((usage) => {
+        if (!cancelled) {
+          setUsageState({ data: usage, loading: false, error: null });
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setUsageState({
+            data: null,
+            loading: false,
+            error: formatPanelError(error)
+          });
+        }
+      });
+
+    void loadDesktopGlossary(panelDataIdentity)
+      .then((terms) => {
+        if (!cancelled) {
+          setGlossaryState({ data: terms, loading: false, error: null });
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) {
+          setGlossaryState({
+            data: [],
+            loading: false,
+            error: formatPanelError(error)
+          });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [panelDataIdentity, panelRefreshKey]);
 
   useEffect(() => {
     subtitleStreamEndRef.current?.scrollIntoView({
@@ -350,6 +482,8 @@ export function MainWindow(): ReactElement {
         windowsBuild: audioCapabilities.windowsBuild
       });
       activeSessionIdRef.current = started.sessionId;
+      setUserId(started.userId);
+      setPanelRefreshKey((currentKey) => currentKey + 1);
       setActiveInterpretationPolicy(interpretationPolicy);
 
       audioFrameUnlistenRef.current = await listenToAudioFrames((frame) => {
@@ -408,6 +542,7 @@ export function MainWindow(): ReactElement {
       await cleanupRealtimeSession("user");
       setCaptureStatus(nextStatus);
       setSessionMode("idle");
+      setPanelRefreshKey((currentKey) => currentKey + 1);
     } catch (error) {
       await cleanupRealtimeSession("device_error");
       const commandError = toAudioCommandError(error);
@@ -649,9 +784,29 @@ export function MainWindow(): ReactElement {
           </>
         ) : (
           <section className="panel-canvas glass-panel">
-            {selectedTab === "history" ? <HistoryPanel /> : null}
-            {selectedTab === "usage" ? <UsagePanel /> : null}
-            {selectedTab === "glossary" ? <GlossaryPanel /> : null}
+            {selectedTab === "history" ? (
+              <HistoryPanel
+                hasIdentity={panelDataIdentity !== null}
+                sessions={historyState.data}
+                loading={historyState.loading}
+                error={historyState.error}
+              />
+            ) : null}
+            {selectedTab === "usage" ? (
+              <UsagePanel
+                hasIdentity={panelDataIdentity !== null}
+                usage={usageState.data}
+                loading={usageState.loading}
+                error={usageState.error}
+              />
+            ) : null}
+            {selectedTab === "glossary" ? (
+              <GlossaryPanel
+                terms={glossaryState.data}
+                loading={glossaryState.loading}
+                error={glossaryState.error}
+              />
+            ) : null}
           </section>
         )}
       </div>
@@ -1058,6 +1213,52 @@ function getRuntimeFeedbackMessage(message: string): string {
   return message;
 }
 
+function formatPanelError(error: unknown): string {
+  return error instanceof Error ? error.message : "Gateway 数据请求失败。";
+}
+
+function formatDateTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return date.toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+}
+
+function msToRoundedMinutes(valueMs: number): number {
+  return Math.max(0, Math.round(valueMs / 60_000));
+}
+
+function formatMsAsMinutes(valueMs: number): string {
+  return formatMinutes(msToRoundedMinutes(valueMs));
+}
+
+function formatStorage(storageBytes: number): string {
+  if (storageBytes < 1024 * 1024) {
+    return `${Math.round(storageBytes / 1024)} KB`;
+  }
+
+  return `${Math.round(storageBytes / (1024 * 1024))} MB`;
+}
+
+function formatTermDetail(entry: DesktopTermEntry): string {
+  const details = [
+    entry.domain,
+    entry.kind,
+    entry.aliases.length > 0 ? `aliases: ${entry.aliases.join(", ")}` : null,
+    entry.priority !== undefined ? `priority: ${entry.priority}` : null
+  ].filter((detail): detail is string => detail !== null && detail !== undefined);
+
+  return details.length > 0 ? details.join(" · ") : entry.mode;
+}
+
 function getDefaultAudioDeviceId(devices: AudioDevice[]): string | null {
   return devices.find((device) => device.isDefault)?.id ?? devices[0]?.id ?? null;
 }
@@ -1142,37 +1343,75 @@ function sortSubtitleSegments(
   return left.startAtMs - right.startAtMs;
 }
 
-function HistoryPanel(): ReactElement {
+interface HistoryPanelProps {
+  hasIdentity: boolean;
+  sessions: DesktopSessionSummary[];
+  loading: boolean;
+  error: string | null;
+}
+
+function HistoryPanel({
+  hasIdentity,
+  sessions,
+  loading,
+  error
+}: HistoryPanelProps): ReactElement {
   return (
     <>
       <div className="section-heading">
         <History size={18} aria-hidden="true" />
         <h2>历史会话</h2>
       </div>
-      <div className="table-list">
-        {historySessions.map((session) => (
-          <article className="row-item" key={session.id}>
-            <div>
-              <strong>{session.title}</strong>
-              <span>
-                {session.source} · {session.startedAt}
-              </span>
-            </div>
-            <div className="row-stats">
-              <span>{formatMinutes(session.durationMinutes)}</span>
-              <span>{session.segmentCount} segments</span>
-              <span>{session.storageMb} MB</span>
-            </div>
-          </article>
-        ))}
-      </div>
+      {!hasIdentity ? (
+        <PanelMessage title="等待真实身份" detail="激活邀请码或完成一次 Gateway 会话后，这里会显示历史会话。" />
+      ) : loading ? (
+        <PanelMessage title="正在加载" detail="正在从 Gateway 拉取历史会话。" />
+      ) : error !== null ? (
+        <PanelMessage title="加载失败" detail={error} />
+      ) : sessions.length === 0 ? (
+        <PanelMessage title="暂无历史会话" detail="该用户还没有保存过会话。" />
+      ) : (
+        <div className="table-list">
+          {sessions.map((session) => (
+            <article className="row-item" key={session.id}>
+              <div>
+                <strong>{session.deviceLabel ?? session.id}</strong>
+                <span>
+                  {session.sourceLang} {"->"} {session.targetLang} · {formatDateTime(session.startedAt)}
+                </span>
+              </div>
+              <div className="row-stats">
+                <span>{formatMsAsMinutes(session.durationMs)}</span>
+                <span>{session.segmentCount} segments</span>
+                <span>{formatStorage(session.storageBytes)}</span>
+                <span>{session.status}</span>
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
     </>
   );
 }
 
-function UsagePanel(): ReactElement {
-  const remainingMinutes = usageSummary.quotaMinutes - usageSummary.usedMinutes;
-  const usagePercent = formatPercent(usageSummary.usedMinutes, usageSummary.quotaMinutes);
+interface UsagePanelProps {
+  hasIdentity: boolean;
+  usage: DesktopUsageSummary | null;
+  loading: boolean;
+  error: string | null;
+}
+
+function UsagePanel({
+  hasIdentity,
+  usage,
+  loading,
+  error
+}: UsagePanelProps): ReactElement {
+  const usedRealtimeMinutes = usage === null ? 0 : msToRoundedMinutes(usage.usedRealtimeMs);
+  const usagePercent =
+    usage === null
+      ? "0%"
+      : formatPercent(usage.usedRealtimeMs, usage.quotaMinutes * 60_000);
 
   return (
     <>
@@ -1180,55 +1419,101 @@ function UsagePanel(): ReactElement {
         <Clock3 size={18} aria-hidden="true" />
         <h2>本月用量</h2>
       </div>
-      <div className="metrics-grid">
-        <MetricTile
-          label="实时字幕"
-          value={formatMinutes(usageSummary.usedMinutes)}
-          detail={`${formatMinutes(remainingMinutes)} remaining`}
-        />
-        <MetricTile
-          label="额度占用"
-          value={formatPercent(usageSummary.usedMinutes, usageSummary.quotaMinutes)}
-          detail={`${usageSummary.month} alpha quota`}
-        />
-        <MetricTile
-          label="翻译 token"
-          value={usageSummary.translatedTokens.toLocaleString("en-US")}
-          detail={`${usageSummary.revisionTokens.toLocaleString("en-US")} revision tokens`}
-        />
-        <MetricTile label="存储" value={`${usageSummary.storageMb} MB`} detail="audio + transcript cache" />
-      </div>
-      <div className="usage-meter" aria-label={`本月额度已使用 ${usagePercent}`}>
-        <span style={{ width: usagePercent }} />
-      </div>
+      {!hasIdentity ? (
+        <PanelMessage title="等待真实身份" detail="激活邀请码或完成一次 Gateway 会话后，这里会显示用量。" />
+      ) : loading ? (
+        <PanelMessage title="正在加载" detail="正在从 Gateway 拉取用量统计。" />
+      ) : error !== null ? (
+        <PanelMessage title="加载失败" detail={error} />
+      ) : usage === null ? (
+        <PanelMessage title="暂无用量" detail="Gateway 暂未返回该用户的用量数据。" />
+      ) : (
+        <>
+          <div className="metrics-grid">
+            <MetricTile
+              label="实时字幕"
+              value={formatMinutes(usedRealtimeMinutes)}
+              detail={`${formatMinutes(usage.remainingMinutes)} remaining`}
+            />
+            <MetricTile
+              label="额度占用"
+              value={usagePercent}
+              detail={`${formatMinutes(usage.quotaMinutes)} alpha quota`}
+            />
+            <MetricTile
+              label="翻译 token"
+              value={(usage.mtInputTokens + usage.mtOutputTokens).toLocaleString("en-US")}
+              detail={`${usage.revisionTokens.toLocaleString("en-US")} revision tokens`}
+            />
+            <MetricTile label="存储" value={formatStorage(usage.storageBytes)} detail="audio + transcript cache" />
+          </div>
+          <div className="usage-meter" aria-label={`本月额度已使用 ${usagePercent}`}>
+            <span style={{ width: usagePercent }} />
+          </div>
+        </>
+      )}
     </>
   );
 }
 
-function GlossaryPanel(): ReactElement {
+interface GlossaryPanelProps {
+  terms: DesktopTermEntry[];
+  loading: boolean;
+  error: string | null;
+}
+
+function GlossaryPanel({
+  terms,
+  loading,
+  error
+}: GlossaryPanelProps): ReactElement {
   return (
     <>
       <div className="section-heading">
         <ListChecks size={18} aria-hidden="true" />
         <h2>术语表入口</h2>
       </div>
-      <div className="table-list">
-        {glossaryEntries.map((entry) => (
-          <article className="row-item" key={entry.id}>
-            <div>
-              <strong>
-                {entry.sourceTerm} {"->"} {entry.targetTerm}
-              </strong>
-              <span>{entry.note}</span>
-            </div>
-            <StatusPill label={entry.enabled ? "启用" : "停用"} tone={entry.enabled ? "active" : "idle"} />
-          </article>
-        ))}
-      </div>
+      {loading ? (
+        <PanelMessage title="正在加载" detail="正在从 Gateway 拉取术语表。" />
+      ) : error !== null ? (
+        <PanelMessage title="加载失败" detail={error} />
+      ) : terms.length === 0 ? (
+        <PanelMessage title="暂无术语" detail="该用户还没有配置术语。" />
+      ) : (
+        <div className="table-list">
+          {terms.map((entry) => (
+            <article className="row-item" key={entry.id}>
+              <div>
+                <strong>
+                  {entry.source} {"->"} {entry.target ?? entry.source}
+                </strong>
+                <span>{formatTermDetail(entry)}</span>
+              </div>
+              <StatusPill
+                label={entry.mode === "fixed_translation" ? "固定译法" : "保留原文"}
+                tone="active"
+              />
+            </article>
+          ))}
+        </div>
+      )}
       <button className="inline-command">
         <Database size={16} aria-hidden="true" />
         打开完整术语管理
       </button>
     </>
+  );
+}
+
+function PanelMessage({ title, detail }: { title: string; detail: string }): ReactElement {
+  return (
+    <div className="table-list">
+      <article className="row-item">
+        <div>
+          <strong>{title}</strong>
+          <span>{detail}</span>
+        </div>
+      </article>
+    </div>
   );
 }
