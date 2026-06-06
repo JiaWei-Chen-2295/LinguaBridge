@@ -346,6 +346,19 @@ button {
   line-height: 1.4;
 }
 
+.interpretation-status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.interpretation-status-row span:not(.status-pill) {
+  color: #5c6b68;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
 .section-heading {
   display: flex;
   align-items: center;

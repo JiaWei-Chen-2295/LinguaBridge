@@ -21,7 +21,14 @@ console.log(
         translateDrafts: config.model.alibabaCloud.translateDrafts,
         requestTimeoutMs: config.model.alibabaCloud.requestTimeoutMs
       },
-      liveTranslateSpikeEnabled: config.model.liveTranslateSpike.enabled
+      liveTranslate: {
+        enabled: config.model.liveTranslateSpike.enabled,
+        websocketUrl: config.model.liveTranslateSpike.websocketUrl,
+        model: config.model.liveTranslateSpike.model,
+        voice: config.model.liveTranslateSpike.voice,
+        outputSampleFormat: config.model.liveTranslateSpike.outputSampleFormat,
+        outputSampleRate: config.model.liveTranslateSpike.outputSampleRate
+      }
     },
     null,
     2

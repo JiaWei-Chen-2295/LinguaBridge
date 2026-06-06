@@ -1,7 +1,9 @@
 import type {
   DeviceInfo,
+  InterpretationOptions,
   LanguagePair,
   PrivacyConsent,
+  RealtimeSessionMode,
   RealtimeAudioFrameMessage,
   RealtimeClientMessage,
   RealtimeSessionPauseMessage,
@@ -67,12 +69,16 @@ function parseStartMessage(
 
   const inviteCode = requiredString(record.payload, "inviteCode");
   const userId = optionalString(record.payload, "userId");
+  const mode = parseSessionMode(record.payload.mode);
+  const interpretation = parseInterpretationOptions(record.payload.interpretation);
   const language = parseLanguage(record.payload.language);
   const device = parseDevice(record.payload.device);
   const privacyConsent = parsePrivacyConsent(record.payload.privacyConsent);
 
   if (
     inviteCode === undefined ||
+    mode === undefined ||
+    (record.payload.interpretation !== undefined && interpretation === undefined) ||
     language === undefined ||
     device === undefined ||
     privacyConsent === undefined
@@ -90,6 +96,12 @@ function parseStartMessage(
   if (userId !== undefined) {
     payload.userId = userId;
   }
+  if (mode !== "subtitle") {
+    payload.mode = mode;
+  }
+  if (interpretation !== undefined) {
+    payload.interpretation = interpretation;
+  }
 
   return {
     type: "session.start",
@@ -97,6 +109,47 @@ function parseStartMessage(
     requestId,
     payload
   };
+}
+
+function parseSessionMode(value: unknown): RealtimeSessionMode | undefined {
+  if (value === undefined) {
+    return "subtitle";
+  }
+
+  return value === "subtitle" || value === "interpretation" ? value : undefined;
+}
+
+function parseInterpretationOptions(
+  value: unknown
+): InterpretationOptions | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  const outputAudio = value.outputAudio;
+  const echoAvoidance = value.echoAvoidance;
+  if (
+    typeof outputAudio !== "boolean" ||
+    (echoAvoidance !== "process_exclude" &&
+      echoAvoidance !== "separate_device" &&
+      echoAvoidance !== "disabled")
+  ) {
+    return undefined;
+  }
+
+  const parsed: InterpretationOptions = {
+    outputAudio,
+    echoAvoidance
+  };
+  const voice = optionalString(value, "voice");
+  if (voice !== undefined) {
+    parsed.voice = voice;
+  }
+  return parsed;
 }
 
 function parseAudioFrameMessage(

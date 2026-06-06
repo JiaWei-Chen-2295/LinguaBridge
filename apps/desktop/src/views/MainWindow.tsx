@@ -16,10 +16,11 @@ import {
   RefreshCw,
   ShieldCheck,
   SlidersHorizontal,
-  TimerReset
+  TimerReset,
+  Volume2
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import type { ReactElement } from "react";
+import type { MutableRefObject, ReactElement } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { IconButton } from "../components/IconButton";
@@ -41,6 +42,10 @@ import {
   showOverlayWindow
 } from "../services/overlayWindow";
 import { publishOverlaySubtitles } from "../services/overlaySubtitle";
+import {
+  InterpretationAudioPlayer,
+  type InterpretationAudioPlayerSnapshot
+} from "../services/interpretationAudioPlayer";
 import { RealtimeGatewayConnection } from "../services/realtimeGateway";
 import type { AudioCaptureStatus, AudioCommandError, AudioDevice } from "../types/audio";
 import type { SubtitleSegmentEvent } from "../types/protocol";
@@ -50,6 +55,12 @@ type SessionMode = "idle" | "capturing" | "paused" | "error";
 type SetupStepState = "waiting" | "current" | "complete" | "active" | "error";
 
 const invitePattern = /^[A-Z0-9-]{6,32}$/;
+const EMPTY_INTERPRETATION_AUDIO_STATUS: InterpretationAudioPlayerSnapshot = {
+  bufferedMs: 0,
+  playedChunks: 0,
+  queuedChunks: 0,
+  lastLatencyMs: null
+};
 
 export function MainWindow(): ReactElement {
   const [inviteCode, setInviteCode] = useState("");
@@ -63,10 +74,13 @@ export function MainWindow(): ReactElement {
   const [feedback, setFeedback] = useState<string | null>(null);
   const [overlayVisible, setOverlayVisible] = useState(true);
   const [liveSubtitleSegments, setLiveSubtitleSegments] = useState<SubtitleSegmentEvent[]>([]);
+  const [interpretationAudioStatus, setInterpretationAudioStatus] =
+    useState<InterpretationAudioPlayerSnapshot>(EMPTY_INTERPRETATION_AUDIO_STATUS);
   const realtimeConnectionRef = useRef<RealtimeGatewayConnection | null>(null);
   const audioFrameUnlistenRef = useRef<(() => void) | null>(null);
   const activeSessionIdRef = useRef<string | null>(null);
   const audioSendingEnabledRef = useRef(false);
+  const interpretationAudioPlayerRef = useRef<InterpretationAudioPlayer | null>(null);
 
   const audioErrored = sessionMode === "error" || captureStatus?.state === "error";
   const audioReady = !audioErrored;
@@ -172,6 +186,8 @@ export function MainWindow(): ReactElement {
       audioFrameUnlistenRef.current = null;
       realtimeConnectionRef.current?.close();
       realtimeConnectionRef.current = null;
+      void interpretationAudioPlayerRef.current?.close().catch(() => undefined);
+      interpretationAudioPlayerRef.current = null;
       void stopAudioCapture().catch(() => undefined);
     };
   }, []);
@@ -207,13 +223,38 @@ export function MainWindow(): ReactElement {
 
     setFeedback(null);
     setLiveSubtitleSegments([]);
+    setInterpretationAudioStatus(EMPTY_INTERPRETATION_AUDIO_STATUS);
 
     try {
+      const interpretationAudioPlayer = getInterpretationAudioPlayer(
+        interpretationAudioPlayerRef
+      );
+      interpretationAudioPlayer.reset();
+      await interpretationAudioPlayer.resume();
+
       const connection = new RealtimeGatewayConnection({
         onSubtitle: (event) => {
           setLiveSubtitleSegments((currentSegments) =>
             upsertSubtitleSegment(currentSegments, event.payload)
           );
+        },
+        onInterpretationAudioDelta: (event) => {
+          void interpretationAudioPlayer.enqueue(event.payload)
+            .then((snapshot) => {
+              setInterpretationAudioStatus(snapshot);
+            })
+            .catch((error: unknown) => {
+              setFeedback(
+                `中文同传播放失败：${
+                  error instanceof Error
+                    ? getRuntimeFeedbackMessage(error.message)
+                    : "请停止后重新开始会话。"
+                }`
+              );
+            });
+        },
+        onInterpretationAudioCompleted: () => {
+          setInterpretationAudioStatus(interpretationAudioPlayer.snapshot());
         },
         onError: (event) => {
           setFeedback(event.payload.message);
@@ -225,7 +266,10 @@ export function MainWindow(): ReactElement {
       realtimeConnectionRef.current = connection;
       const started = await connection.startSession({
         inviteCode,
-        deviceId: selectedDeviceId
+        deviceId: selectedDeviceId,
+        mode: "interpretation",
+        outputAudio: true,
+        echoAvoidance: "disabled"
       });
       activeSessionIdRef.current = started.sessionId;
 
@@ -247,7 +291,7 @@ export function MainWindow(): ReactElement {
       audioSendingEnabledRef.current = true;
       setCaptureStatus(nextStatus);
       setSessionMode("capturing");
-      setFeedback(`真实链路已启动：Gateway session ${started.sessionId}`);
+      setFeedback(`中文同传已启动：Gateway session ${started.sessionId}`);
     } catch (error) {
       await cleanupRealtimeSession("device_error");
       const commandError = toAudioCommandError(error);
@@ -352,6 +396,8 @@ export function MainWindow(): ReactElement {
     connection?.close();
     realtimeConnectionRef.current = null;
     activeSessionIdRef.current = null;
+    interpretationAudioPlayerRef.current?.reset();
+    setInterpretationAudioStatus(EMPTY_INTERPRETATION_AUDIO_STATUS);
   }
 
   return (
@@ -393,8 +439,8 @@ export function MainWindow(): ReactElement {
       <section className="main-workspace">
         <header className="workspace-header">
           <div>
-            <h1>实时字幕伴学</h1>
-            <p>按顺序完成准入、授权和音频源设置，即可把 Windows 系统声音推给 Gateway。</p>
+            <h1>实时字幕与中文同传</h1>
+            <p>按顺序完成准入、授权和音频源设置，即可把 Windows 系统声音推给 Gateway 并播放中文译音。</p>
           </div>
           <div className="workspace-header-actions">
             <button className="action-button" onClick={() => void toggleOverlayWindow()}>
@@ -457,9 +503,34 @@ export function MainWindow(): ReactElement {
                 />
                 <span>
                   <strong>允许上传系统音频与字幕落盘</strong>
-                  <small>用于实时字幕、会话复盘和删除会话时的对象存储清理。</small>
+                  <small>用于实时字幕、中文同传、会话复盘和删除会话时的对象存储清理；中文译音默认保存 30 天。</small>
                 </span>
               </label>
+
+              <div className="setup-row setup-row--ready">
+                <div className="setup-row-title">
+                  <Volume2 size={18} aria-hidden="true" />
+                  <span>中文同传语音</span>
+                </div>
+                <div className="interpretation-status-row">
+                  <StatusPill
+                    label={
+                      sessionMode === "capturing"
+                        ? interpretationAudioStatus.playedChunks > 0
+                          ? "正在播放"
+                          : "等待译音"
+                        : "默认开启"
+                    }
+                    tone={sessionMode === "capturing" ? "active" : "idle"}
+                  />
+                  <span>
+                    {formatInterpretationAudioStatus(interpretationAudioStatus)}
+                  </span>
+                </div>
+                <p className="muted-line">
+                  第一版使用本机 Web Audio 播放 Gateway 返回的中文译音，音轨随会话按 30 天策略保存。
+                </p>
+              </div>
 
               <div
                 className={`setup-row ${
@@ -500,7 +571,7 @@ export function MainWindow(): ReactElement {
                 <SlidersHorizontal size={18} aria-hidden="true" />
                 <div>
                   <strong>{sessionMode === "capturing" ? "真实链路运行中" : "准备连接 Gateway"}</strong>
-                  <span>{activeDeviceName}</span>
+                  <span>{activeDeviceName} · 中文同传语音默认开启</span>
                 </div>
               </div>
               <div className="transport-controls">
@@ -553,7 +624,7 @@ export function MainWindow(): ReactElement {
                   <strong>{sessionMode === "capturing" ? "正在等待 ASR 返回字幕" : "等待开始伴学"}</strong>
                   <span>
                     {sessionMode === "capturing"
-                      ? "音频帧已开始推送，收到 Gateway 字幕事件后会显示在这里。"
+                      ? "音频帧已开始推送，收到 Gateway 字幕和中文译音事件后会在这里更新。"
                       : "完成上方步骤并点击开始后，这里只显示真实会话字幕。"}
                   </span>
                 </div>
@@ -718,6 +789,28 @@ function getRuntimeFeedbackMessage(message: string): string {
 
 function getDefaultAudioDeviceId(devices: AudioDevice[]): string | null {
   return devices.find((device) => device.isDefault)?.id ?? devices[0]?.id ?? null;
+}
+
+function getInterpretationAudioPlayer(
+  ref: MutableRefObject<InterpretationAudioPlayer | null>
+): InterpretationAudioPlayer {
+  if (ref.current === null) {
+    ref.current = new InterpretationAudioPlayer();
+  }
+
+  return ref.current;
+}
+
+function formatInterpretationAudioStatus(
+  status: InterpretationAudioPlayerSnapshot
+): string {
+  if (status.playedChunks === 0) {
+    return "等待 Gateway 返回中文译音";
+  }
+
+  const latencyText =
+    status.lastLatencyMs === null ? "延迟待测" : `最近延迟 ${status.lastLatencyMs} ms`;
+  return `${status.playedChunks} 段译音 · 缓冲 ${status.bufferedMs} ms · ${latencyText}`;
 }
 
 function SubtitlePreview({ segment }: { segment: SubtitleSegmentEvent }): ReactElement {
