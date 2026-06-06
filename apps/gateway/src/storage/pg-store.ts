@@ -699,6 +699,8 @@ export class PgStore implements GatewayStore {
       mtInputTokens: amountByType.get("mt_input_tokens") ?? 0,
       mtOutputTokens: amountByType.get("mt_output_tokens") ?? 0,
       revisionTokens: amountByType.get("revision_tokens") ?? 0,
+      interpretationAudioMs:
+        amountByType.get("interpretation_audio_duration") ?? 0,
       interruptions: amountByType.get("session_interruption") ?? 0,
       remainingMinutes: Math.max(0, quotaMinutes - usedMinutes)
     };

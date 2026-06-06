@@ -299,6 +299,7 @@ export class InMemoryStore implements GatewayStore {
     const mtInputTokens = sumUsage(userEvents, "mt_input_tokens");
     const mtOutputTokens = sumUsage(userEvents, "mt_output_tokens");
     const revisionTokens = sumUsage(userEvents, "revision_tokens");
+    const interpretationAudioMs = sumUsage(userEvents, "interpretation_audio_duration");
     const interruptions = sumUsage(userEvents, "session_interruption");
     const usedMinutes = usedRealtimeMs / 60_000;
 
@@ -311,6 +312,7 @@ export class InMemoryStore implements GatewayStore {
       mtInputTokens,
       mtOutputTokens,
       revisionTokens,
+      interpretationAudioMs,
       interruptions,
       remainingMinutes: Math.max(0, quotaMinutes - usedMinutes)
     };
