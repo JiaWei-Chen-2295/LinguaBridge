@@ -94,7 +94,8 @@ export class LiveTranslateTextBuffer {
       segment.lastUpdatedAtMs = update.receivedAtMs;
     }
 
-    if (!wasSegmentFinal && (changed || update.itemId === undefined)) {
+    const isSegmentFinal = segment.sourceCompleted && segment.targetCompleted;
+    if (!wasSegmentFinal && !isSegmentFinal && (changed || update.itemId === undefined)) {
       this.lastItemId = itemId;
     }
 
