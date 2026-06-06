@@ -109,8 +109,8 @@ export function OverlayWindow(): ReactElement {
             onMouseDown={handleDragStart}
             title={locked ? "浮窗已锁定" : "拖动浮窗"}
           >
-            <GripHorizontal size={18} aria-hidden="true" />
-            <span>LinguaBridge</span>
+            <GripHorizontal size={14} aria-hidden="true" />
+            <span>Overlay HUD</span>
           </div>
           <div className="overlay-actions">
             <StatusPill label={synced ? "已同步" : "待同步"} tone={synced ? "active" : "idle"} />

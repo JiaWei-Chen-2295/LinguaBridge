@@ -13,15 +13,17 @@ import {
   Languages,
   ListChecks,
   MonitorUp,
+  Pencil,
   RefreshCw,
+  Settings,
   ShieldCheck,
-  SlidersHorizontal,
   TimerReset,
-  Volume2
+  Volume2,
+  X
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { MutableRefObject, ReactElement } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 
 import { IconButton } from "../components/IconButton";
 import { MetricTile } from "../components/MetricTile";
@@ -58,7 +60,7 @@ import type {
 import type { SubtitleSegmentEvent } from "../types/protocol";
 import type { InterpretationOptions } from "@lingua-bridge/protocol";
 
-type MainTab = "history" | "usage" | "glossary";
+type MainTab = "session" | "history" | "usage" | "glossary";
 type SessionMode = "idle" | "capturing" | "paused" | "error";
 type SetupStepState = "waiting" | "current" | "complete" | "active" | "error";
 type EchoAvoidance = InterpretationOptions["echoAvoidance"];
@@ -75,7 +77,8 @@ export function MainWindow(): ReactElement {
   const [inviteCode, setInviteCode] = useState("");
   const [inviteActivated, setInviteActivated] = useState(false);
   const [privacyAccepted, setPrivacyAccepted] = useState(false);
-  const [selectedTab, setSelectedTab] = useState<MainTab>("history");
+  const [selectedTab, setSelectedTab] = useState<MainTab>("session");
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [devices, setDevices] = useState<AudioDevice[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
   const [captureStatus, setCaptureStatus] = useState<AudioCaptureStatus | null>(null);
@@ -441,275 +444,373 @@ export function MainWindow(): ReactElement {
     setInterpretationAudioStatus(EMPTY_INTERPRETATION_AUDIO_STATUS);
   }
 
+  const latestSubtitle = liveSubtitleSegments[liveSubtitleSegments.length - 1] ?? null;
+  const displayLatency =
+    latestSubtitle?.latencyMs ??
+    interpretationAudioStatus.lastLatencyMs ??
+    null;
+
   return (
     <main className="app-shell">
-      <aside className="side-rail" aria-label="LinguaBridge sections">
-        <div className="brand-lockup">
-          <div className="brand-mark">LB</div>
-          <div>
-            <strong>LinguaBridge</strong>
-            <span>Alpha client</span>
-          </div>
+      <div className="ambient-bg" aria-hidden="true">
+        <div className="ambient-orb" />
+      </div>
+
+      <nav className="top-nav" aria-label="Primary">
+        <div className="top-nav-brand">
+          <span className="top-nav-title">LinguaBridge AI</span>
         </div>
 
-        <nav className="rail-nav" aria-label="Main">
+        <div className="top-nav-center">
           <button
-            className={selectedTab === "history" ? "is-selected" : ""}
+            type="button"
+            className={`top-nav-tab ${selectedTab === "session" ? "is-active" : ""}`}
+            onClick={() => setSelectedTab("session")}
+          >
+            Session
+          </button>
+        </div>
+
+        <div className="top-nav-actions">
+          <button
+            type="button"
+            className="nav-btn nav-btn--ghost"
+            disabled={sessionMode !== "capturing" && sessionMode !== "paused"}
+            onClick={handlePause}
+          >
+            {sessionMode === "paused" ? "Resume" : "Pause"}
+          </button>
+          <button
+            type="button"
+            className="nav-btn nav-btn--primary"
+            disabled={sessionMode !== "idle" || !canStart}
+            onClick={() => void handleStart()}
+          >
+            Start
+          </button>
+          <div className="top-nav-divider" aria-hidden="true" />
+          <button
+            type="button"
+            className="nav-icon-btn"
+            title={overlayVisible ? "隐藏悬浮窗" : "打开悬浮窗"}
+            onClick={() => void toggleOverlayWindow()}
+          >
+            <MonitorUp size={18} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className={`nav-icon-btn ${settingsOpen ? "is-active" : ""}`}
+            title="会话设置"
+            onClick={() => setSettingsOpen((open) => !open)}
+          >
+            <Settings size={18} aria-hidden="true" />
+          </button>
+        </div>
+      </nav>
+
+      <aside className="side-dock" aria-label="Sections">
+        <button
+          type="button"
+          className={`side-dock-brand ${selectedTab === "session" ? "is-active" : ""}`}
+          title="实时会话"
+          onClick={() => setSelectedTab("session")}
+        >
+          <Languages size={18} aria-hidden="true" />
+        </button>
+
+        <nav className="side-dock-nav" aria-label="Main">
+          <button
+            type="button"
+            className={`side-dock-item ${selectedTab === "history" ? "is-active" : ""}`}
+            title="历史会话"
             onClick={() => setSelectedTab("history")}
           >
-            <History size={18} aria-hidden="true" />
-            历史
+            <History size={20} aria-hidden="true" />
+            <span className="side-dock-tooltip">History</span>
           </button>
           <button
-            className={selectedTab === "usage" ? "is-selected" : ""}
+            type="button"
+            className={`side-dock-item ${selectedTab === "usage" ? "is-active" : ""}`}
+            title="用量统计"
             onClick={() => setSelectedTab("usage")}
           >
-            <TimerReset size={18} aria-hidden="true" />
-            用量
+            <TimerReset size={20} aria-hidden="true" />
+            <span className="side-dock-tooltip">Usage</span>
           </button>
           <button
-            className={selectedTab === "glossary" ? "is-selected" : ""}
+            type="button"
+            className={`side-dock-item ${selectedTab === "glossary" ? "is-active" : ""}`}
+            title="术语表"
             onClick={() => setSelectedTab("glossary")}
           >
-            <BookOpenText size={18} aria-hidden="true" />
-            术语表
+            <BookOpenText size={20} aria-hidden="true" />
+            <span className="side-dock-tooltip">Glossary</span>
           </button>
         </nav>
       </aside>
 
-      <section className="main-workspace">
-        <header className="workspace-header">
-          <div>
-            <h1>实时字幕与中文同传</h1>
-            <p>按顺序完成准入、授权和音频源设置，即可把 Windows 系统声音推给 Gateway 并播放中文译音。</p>
-          </div>
-          <div className="workspace-header-actions">
-            <button className="action-button" onClick={() => void toggleOverlayWindow()}>
-              <MonitorUp size={18} aria-hidden="true" />
-              {overlayVisible ? "隐藏悬浮窗" : "打开悬浮窗"}
-            </button>
-            <SessionStatus mode={sessionMode} captureStatus={captureStatus} />
-          </div>
-        </header>
-
-        <section className="session-guide" aria-label="Session controls">
-          <div className="guide-steps" aria-label="启动步骤">
-            {setupSteps.map((step) => (
-              <GuideStep key={step.id} step={step} />
-            ))}
-          </div>
-
-          <div className="guide-detail">
-            <div className="guide-header">
-              <div>
-                <span className="guide-eyebrow">当前步骤</span>
-                <h2>{guideSummary.title}</h2>
-                <p>{guideSummary.detail}</p>
-              </div>
-              <StatusPill label={guideSummary.statusLabel} tone={guideSummary.statusTone} />
-            </div>
-
-            <div className="setup-stack">
-              <div className={`setup-row ${inviteActivated ? "setup-row--ready" : "setup-row--current"}`}>
-                <div className="setup-row-title">
-                  <KeyRound size={18} aria-hidden="true" />
-                  <span>Alpha 邀请码</span>
-                </div>
-                <div className="invite-row">
-                  <input
-                    value={inviteCode}
-                    onChange={(event) => {
-                      setInviteCode(event.target.value);
-                      setInviteActivated(false);
-                    }}
-                    placeholder="INVITE-ALPHA"
-                    aria-label="邀请码"
-                  />
-                  <button className="text-button" onClick={activateInvite}>
-                    <CheckCircle2 size={16} aria-hidden="true" />
-                    激活
-                  </button>
-                </div>
-              </div>
-
-              <label
-                className={`setup-row setup-row--check ${
-                  privacyAccepted ? "setup-row--ready" : inviteActivated ? "setup-row--current" : ""
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  checked={privacyAccepted}
-                  onChange={(event) => setPrivacyAccepted(event.target.checked)}
+      <div className="main-canvas">
+        {selectedTab === "session" ? (
+          <>
+            <header className="session-header">
+              <div className="session-status-chip">
+                <span
+                  className={`pulse-indicator ${sessionMode === "capturing" ? "pulse-indicator--live" : ""}`}
                 />
-                <span>
-                  <strong>允许上传系统音频与字幕落盘</strong>
-                  <small>用于实时字幕、中文同传、会话复盘和删除会话时的对象存储清理；中文译音默认保存 30 天。</small>
+                <span className="session-status-label">
+                  {sessionMode === "capturing"
+                    ? "Capturing"
+                    : sessionMode === "paused"
+                      ? "Paused"
+                      : sessionMode === "error"
+                        ? "Error"
+                        : "Idle"}
                 </span>
-              </label>
-
-              <div className="setup-row setup-row--ready">
-                <div className="setup-row-title">
-                  <Volume2 size={18} aria-hidden="true" />
-                  <span>中文同传语音</span>
-                </div>
-                <div className="interpretation-status-row">
-                  <StatusPill
-                    label={
-                      sessionMode === "capturing"
-                        ? activeInterpretationPolicy?.outputAudio === false
-                          ? "仅中文字幕"
-                          : interpretationAudioStatus.playedChunks > 0
-                            ? "正在播放"
-                            : "等待译音"
-                        : previewInterpretationPolicy?.outputAudio === true
-                          ? "可播放"
-                          : "安全降级"
-                    }
-                    tone={
-                      activeInterpretationPolicy?.echoRiskAccepted === true ||
-                      previewInterpretationPolicy?.echoRiskAccepted === true
-                        ? "warning"
-                        : sessionMode === "capturing"
-                          ? "active"
-                          : "idle"
-                    }
-                  />
-                  <span>
-                    {sessionMode === "capturing" && activeInterpretationPolicy?.outputAudio !== false
-                      ? formatInterpretationAudioStatus(interpretationAudioStatus)
-                      : formatEchoAvoidanceStatus(
-                          activeInterpretationPolicy ?? previewInterpretationPolicy,
-                          audioCapabilities
-                        )}
-                  </span>
-                </div>
-                <p className="muted-line">
-                  {formatEchoAvoidanceDetail(previewInterpretationPolicy, audioCapabilities)}
-                </p>
-                {previewInterpretationPolicy?.echoAvoidance !== "process_exclude" ? (
-                  <label className="risk-confirm-row">
-                    <input
-                      type="checkbox"
-                      checked={echoRiskAccepted}
-                      onChange={(event) => setEchoRiskAccepted(event.target.checked)}
-                    />
-                    <span>高级风险模式：允许播放译音并接受回灌、回声和额外用量风险</span>
-                  </label>
+                {displayLatency !== null ? (
+                  <>
+                    <span className="session-status-sep" aria-hidden="true" />
+                    <span className="session-status-meta">Latency {displayLatency}ms</span>
+                  </>
                 ) : null}
               </div>
 
-              <div
-                className={`setup-row ${
-                  audioErrored
-                    ? "setup-row--error"
-                    : inviteActivated && privacyAccepted
-                      ? "setup-row--ready"
-                      : ""
-                }`}
-              >
-                <div className="setup-row-title">
-                  <Headphones size={18} aria-hidden="true" />
-                  <span>系统音频输出</span>
-                </div>
-                <div className="device-row">
-                  <select
-                    value={selectedDeviceId ?? ""}
-                    onChange={(event) => setSelectedDeviceId(event.target.value || null)}
-                    aria-label="系统音频输出设备"
-                  >
-                    <option value="">Default Windows output</option>
-                    {devices.map((device) => (
-                      <option key={device.id} value={device.id}>
-                        {device.name}
-                      </option>
-                    ))}
-                  </select>
-                  <IconButton icon={RefreshCw} label="刷新音频设备" onClick={refreshDevices} />
-                </div>
-                <p className="muted-line">
-                  {activeDeviceName} · 16 kHz mono PCM16 · 20 ms frames
-                </p>
-              </div>
-            </div>
+              <PipelineStrip steps={setupSteps} />
+            </header>
 
-            <div className="primary-action-bar">
-              <div className="action-context">
-                <SlidersHorizontal size={18} aria-hidden="true" />
-                <div>
-                  <strong>{sessionMode === "capturing" ? "真实链路运行中" : "准备连接 Gateway"}</strong>
-                  <span>{activeDeviceName} · {formatEchoAvoidanceStatus(previewInterpretationPolicy, audioCapabilities)}</span>
+            <section className="subtitle-stream scrollbar-hide" aria-label="Live subtitle preview">
+              <div className="subtitle-stream-rail" aria-hidden="true" />
+
+              {liveSubtitleSegments.length === 0 ? (
+                <div className="glass-panel subtitle-card subtitle-card--empty">
+                  <div className="subtitle-card-header">
+                    <span className="subtitle-badge">READY</span>
+                  </div>
+                  <div className="subtitle-card-body">
+                    <p className="subtitle-source">
+                      {sessionMode === "capturing"
+                        ? "Audio frames are streaming to Gateway. Subtitles will appear here as ASR results arrive."
+                        : "Complete setup in the settings panel, then press Start to begin a live session."}
+                    </p>
+                    <p className="subtitle-target">
+                      {sessionMode === "capturing" ? "正在等待 ASR 返回字幕" : "等待开始伴学"}
+                    </p>
+                  </div>
                 </div>
-              </div>
-              <div className="transport-controls">
-                <button
-                  className="action-button action-button--primary"
-                  disabled={!canStart}
-                  onClick={() => void handleStart()}
-                >
-                  <CirclePlay size={18} aria-hidden="true" />
-                  开始
-                </button>
-                <button
-                  className="action-button"
-                  disabled={sessionMode !== "capturing" && sessionMode !== "paused"}
-                  onClick={handlePause}
-                >
-                  <CirclePause size={18} aria-hidden="true" />
-                  {sessionMode === "paused" ? "恢复" : "暂停"}
-                </button>
-                <button
-                  className="action-button action-button--danger"
-                  disabled={sessionMode === "idle"}
-                  onClick={() => void handleStop()}
-                >
-                  <CircleStop size={18} aria-hidden="true" />
-                  停止
-                </button>
-              </div>
-            </div>
+              ) : (
+                liveSubtitleSegments.map((segment) => (
+                  <SubtitlePreview key={segment.segmentId} segment={segment} />
+                ))
+              )}
+            </section>
 
             {feedback ? (
-              <p className={`feedback-line ${audioErrored ? "feedback-line--error" : ""}`}>
-                {audioErrored ? <AlertCircle size={15} aria-hidden="true" /> : null}
+              <p className={`feedback-toast ${audioErrored ? "feedback-toast--error" : ""}`}>
+                {audioErrored ? <AlertCircle size={14} aria-hidden="true" /> : null}
                 {feedback}
               </p>
             ) : null}
-          </div>
-        </section>
+          </>
+        ) : (
+          <section className="panel-canvas glass-panel">
+            {selectedTab === "history" ? <HistoryPanel /> : null}
+            {selectedTab === "usage" ? <UsagePanel /> : null}
+            {selectedTab === "glossary" ? <GlossaryPanel /> : null}
+          </section>
+        )}
+      </div>
 
-        <section className="live-strip" aria-label="Live subtitle preview">
-          <div className="section-heading">
-            <Languages size={18} aria-hidden="true" />
-            <h2>实时字幕预览</h2>
+      {settingsOpen ? (
+        <div className="settings-backdrop" onClick={() => setSettingsOpen(false)} />
+      ) : null}
+
+      <aside
+        className={`settings-drawer ${settingsOpen ? "is-open" : ""}`}
+        aria-label="Session settings"
+        aria-hidden={!settingsOpen}
+      >
+        <header className="settings-drawer-header">
+          <div>
+            <span className="guide-eyebrow">Setup</span>
+            <h2>{guideSummary.title}</h2>
+            <p>{guideSummary.detail}</p>
           </div>
-          <div className="subtitle-feed">
-            {liveSubtitleSegments.length === 0 ? (
-              <div className="subtitle-empty">
-                <Languages size={20} aria-hidden="true" />
-                <div>
-                  <strong>{sessionMode === "capturing" ? "正在等待 ASR 返回字幕" : "等待开始伴学"}</strong>
-                  <span>
-                    {sessionMode === "capturing"
-                      ? "音频帧已开始推送，收到 Gateway 字幕和中文译音事件后会在这里更新。"
-                      : "完成上方步骤并点击开始后，这里只显示真实会话字幕。"}
-                  </span>
-                </div>
+          <button
+            type="button"
+            className="nav-icon-btn"
+            title="关闭设置"
+            onClick={() => setSettingsOpen(false)}
+          >
+            <X size={18} aria-hidden="true" />
+          </button>
+        </header>
+
+        <div className="settings-drawer-body custom-scrollbar">
+          <div className="setup-stack">
+            <div className={`setup-row ${inviteActivated ? "setup-row--ready" : "setup-row--current"}`}>
+              <div className="setup-row-title">
+                <KeyRound size={16} aria-hidden="true" />
+                <span>Alpha 邀请码</span>
               </div>
-            ) : (
-              liveSubtitleSegments.map((segment) => (
-                <SubtitlePreview key={segment.segmentId} segment={segment} />
-              ))
-            )}
-          </div>
-        </section>
+              <div className="invite-row">
+                <input
+                  value={inviteCode}
+                  onChange={(event) => {
+                    setInviteCode(event.target.value);
+                    setInviteActivated(false);
+                  }}
+                  placeholder="INVITE-ALPHA"
+                  aria-label="邀请码"
+                />
+                <button type="button" className="text-button" onClick={activateInvite}>
+                  <CheckCircle2 size={14} aria-hidden="true" />
+                  激活
+                </button>
+              </div>
+            </div>
 
-        <section className="tab-surface">
-          {selectedTab === "history" ? <HistoryPanel /> : null}
-          {selectedTab === "usage" ? <UsagePanel /> : null}
-          {selectedTab === "glossary" ? <GlossaryPanel /> : null}
-        </section>
-      </section>
+            <label
+              className={`setup-row setup-row--check ${
+                privacyAccepted ? "setup-row--ready" : inviteActivated ? "setup-row--current" : ""
+              }`}
+            >
+              <input
+                type="checkbox"
+                checked={privacyAccepted}
+                onChange={(event) => setPrivacyAccepted(event.target.checked)}
+              />
+              <span>
+                <strong>允许上传系统音频与字幕落盘</strong>
+                <small>
+                  用于实时字幕、中文同传、会话复盘和删除会话时的对象存储清理；中文译音默认保存 30 天。
+                </small>
+              </span>
+            </label>
+
+            <div className="setup-row setup-row--ready">
+              <div className="setup-row-title">
+                <Volume2 size={16} aria-hidden="true" />
+                <span>中文同传语音</span>
+              </div>
+              <div className="interpretation-status-row">
+                <StatusPill
+                  label={
+                    sessionMode === "capturing"
+                      ? activeInterpretationPolicy?.outputAudio === false
+                        ? "仅中文字幕"
+                        : interpretationAudioStatus.playedChunks > 0
+                          ? "正在播放"
+                          : "等待译音"
+                      : previewInterpretationPolicy?.outputAudio === true
+                        ? "可播放"
+                        : "安全降级"
+                  }
+                  tone={
+                    activeInterpretationPolicy?.echoRiskAccepted === true ||
+                    previewInterpretationPolicy?.echoRiskAccepted === true
+                      ? "warning"
+                      : sessionMode === "capturing"
+                        ? "active"
+                        : "idle"
+                  }
+                />
+                <span>
+                  {sessionMode === "capturing" && activeInterpretationPolicy?.outputAudio !== false
+                    ? formatInterpretationAudioStatus(interpretationAudioStatus)
+                    : formatEchoAvoidanceStatus(
+                        activeInterpretationPolicy ?? previewInterpretationPolicy,
+                        audioCapabilities
+                      )}
+                </span>
+              </div>
+              <p className="muted-line">
+                {formatEchoAvoidanceDetail(previewInterpretationPolicy, audioCapabilities)}
+              </p>
+              {previewInterpretationPolicy?.echoAvoidance !== "process_exclude" ? (
+                <label className="risk-confirm-row">
+                  <input
+                    type="checkbox"
+                    checked={echoRiskAccepted}
+                    onChange={(event) => setEchoRiskAccepted(event.target.checked)}
+                  />
+                  <span>高级风险模式：允许播放译音并接受回灌、回声和额外用量风险</span>
+                </label>
+              ) : null}
+            </div>
+
+            <div
+              className={`setup-row ${
+                audioErrored
+                  ? "setup-row--error"
+                  : inviteActivated && privacyAccepted
+                    ? "setup-row--ready"
+                    : ""
+              }`}
+            >
+              <div className="setup-row-title">
+                <Headphones size={16} aria-hidden="true" />
+                <span>系统音频输出</span>
+              </div>
+              <div className="device-row">
+                <select
+                  value={selectedDeviceId ?? ""}
+                  onChange={(event) => setSelectedDeviceId(event.target.value || null)}
+                  aria-label="系统音频输出设备"
+                >
+                  <option value="">Default Windows output</option>
+                  {devices.map((device) => (
+                    <option key={device.id} value={device.id}>
+                      {device.name}
+                    </option>
+                  ))}
+                </select>
+                <IconButton icon={RefreshCw} label="刷新音频设备" onClick={refreshDevices} />
+              </div>
+              <p className="muted-line">
+                {activeDeviceName} · 16 kHz mono PCM16 · 20 ms frames
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <footer className="settings-drawer-footer">
+          <div className="settings-drawer-meta">
+            <strong>{sessionMode === "capturing" ? "真实链路运行中" : "准备连接 Gateway"}</strong>
+            <span>
+              {activeDeviceName} ·{" "}
+              {formatEchoAvoidanceStatus(previewInterpretationPolicy, audioCapabilities)}
+            </span>
+          </div>
+          <div className="transport-controls">
+            <button
+              type="button"
+              className="action-button action-button--primary"
+              disabled={!canStart}
+              onClick={() => void handleStart()}
+            >
+              <CirclePlay size={16} aria-hidden="true" />
+              Start
+            </button>
+            <button
+              type="button"
+              className="action-button"
+              disabled={sessionMode !== "capturing" && sessionMode !== "paused"}
+              onClick={handlePause}
+            >
+              <CirclePause size={16} aria-hidden="true" />
+              {sessionMode === "paused" ? "Resume" : "Pause"}
+            </button>
+            <button
+              type="button"
+              className="action-button action-button--danger"
+              disabled={sessionMode === "idle"}
+              onClick={() => void handleStop()}
+            >
+              <CircleStop size={16} aria-hidden="true" />
+              Stop
+            </button>
+          </div>
+        </footer>
+      </aside>
     </main>
   );
 }
@@ -722,45 +823,18 @@ interface SetupStep {
   state: SetupStepState;
 }
 
-interface SessionStatusProps {
-  mode: SessionMode;
-  captureStatus: AudioCaptureStatus | null;
-}
-
-function SessionStatus({ mode, captureStatus }: SessionStatusProps): ReactElement {
-  if (mode === "capturing") {
-    return <StatusPill label="正在听" tone="active" />;
-  }
-
-  if (mode === "paused") {
-    return <StatusPill label="已暂停" tone="warning" />;
-  }
-
-  if (mode === "error" || captureStatus?.state === "error") {
-    return <StatusPill label="音频待接入" tone="error" />;
-  }
-
-  return <StatusPill label="待开始" tone="idle" />;
-}
-
-function GuideStep({ step }: { step: SetupStep }): ReactElement {
-  const Icon = step.icon;
-
+function PipelineStrip({ steps }: { steps: SetupStep[] }): ReactElement {
   return (
-    <div className={`guide-step guide-step--${step.state}`}>
-      <div className="guide-step-icon">
-        {step.state === "complete" ? (
-          <CheckCircle2 size={18} aria-hidden="true" />
-        ) : step.state === "error" ? (
-          <AlertCircle size={18} aria-hidden="true" />
-        ) : (
-          <Icon size={18} aria-hidden="true" />
-        )}
-      </div>
-      <div>
-        <strong>{step.title}</strong>
-        <span>{step.detail}</span>
-      </div>
+    <div className="pipeline-strip" aria-label="启动步骤">
+      {steps.map((step, index) => (
+        <Fragment key={step.id}>
+          {index > 0 ? <div className="pipeline-connector" aria-hidden="true" /> : null}
+          <div className={`pipeline-pill pipeline-pill--${step.state}`}>
+            <span className="pipeline-pill-index">{index + 1}</span>
+            <span className="pipeline-pill-label">{step.title}</span>
+          </div>
+        </Fragment>
+      ))}
     </div>
   );
 }
@@ -974,15 +1048,35 @@ function formatInterpretationAudioStatus(
 }
 
 function SubtitlePreview({ segment }: { segment: SubtitleSegmentEvent }): ReactElement {
+  const isDraft = segment.status === "draft";
+  const isRevised = segment.status === "revised";
+
   return (
-    <article className={`subtitle-preview subtitle-preview--${segment.status}`}>
-      <div className="subtitle-meta">
-        <span>{formatDurationRange(segment.startAtMs, segment.endAtMs)}</span>
-        <span>{segment.status}</span>
-        <span>{segment.latencyMs} ms</span>
+    <article className={`glass-panel subtitle-card subtitle-card--${segment.status}`}>
+      <div
+        className={`subtitle-timeline-dot ${isDraft ? "pulse-indicator pulse-indicator--live" : ""}`}
+        aria-hidden="true"
+      />
+      <div className="subtitle-card-header">
+        <div className="subtitle-card-badges">
+          <span className="subtitle-badge">
+            {isDraft ? <span className="subtitle-badge-dot pulse-indicator pulse-indicator--live" /> : null}
+            {segment.status.toUpperCase()}
+          </span>
+          {isRevised ? <Pencil size={14} aria-hidden="true" /> : null}
+          <span className="subtitle-badge subtitle-badge--muted">
+            {formatDurationRange(segment.startAtMs, segment.endAtMs)}
+          </span>
+        </div>
+        <span className="subtitle-latency">{segment.latencyMs}ms</span>
       </div>
-      <p className="target-line">{segment.targetText}</p>
-      <p className="source-line">{segment.sourceText}</p>
+      <div className="subtitle-card-body">
+        <p className="subtitle-source">{segment.sourceText}</p>
+        <p className="subtitle-target">
+          {segment.targetText}
+          {isDraft ? <span className="blinking-cursor" aria-hidden="true" /> : null}
+        </p>
+      </div>
     </article>
   );
 }
