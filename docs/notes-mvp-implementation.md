@@ -89,13 +89,42 @@ npm run dev:desktop:web
 
 ## 8. Gateway 模型链路验证
 
+### Subtitle Engine 状态流
+
+Gateway 的实时链路现在由 `SubtitleEngine` 统一驱动：
+
+```text
+audio.frame
+  -> ASR provider partial
+  -> Qwen-MT/mock MT
+  -> subtitle.segment.updated(status=draft)
+  -> ASR provider final
+  -> Qwen-MT/mock MT
+  -> subtitle.segment.updated(status=final)
+  -> 每 15-30 秒取最近 2-4 段上下文
+  -> revision provider 只改最近 2 段
+  -> subtitle.segment.updated(status=revised)
+```
+
+- `MODEL_PROVIDER=mock` 时，mock ASR 也按累计 `audio.frame` 时长产出 partial/final，再走同一套 MT、术语和修订状态机；不再直接吐固定 subtitle fixture。
+- `MODEL_PROVIDER=alibaba-cloud` 时，ASR partial/final 来自阿里云 realtime ASR，翻译走 Qwen-MT，修订走 `ALIBABA_REVISION_MODEL`。
+- `SUBTITLE_REVISION_INTERVAL_MS` 默认为 `20000`，运行时会限制在 15000-30000 毫秒；`session.stop` 前会再 flush 一次上下文修订。
+- 术语表来源为内置技术术语 + PostgreSQL `term_entries`。命中 `keep_source` 会保留英文，命中 `fixed_translation` 会固定译法；模型输出后还有一次术语兜底，防止译法漂移。
+- 实时推送的 `revised` 只覆盖当前段和上一段；更早段落只参与 2-4 段上下文，不作为 revised 事件推给 UI。
+- `subtitle_segments` 保存当前段状态，`segment_revisions` 记录每次 draft/final/revised 历史，`usage_events` 记录 `asr_audio_duration`、`mt_input_tokens`、`mt_output_tokens`、`revision_tokens`、`oss_audio_storage` 等 append-only 事件。
+
 ### 本地 mock 链路
 
 1. 保持 `MODEL_PROVIDER=mock`。
 2. 启动 `npm run dev:gateway`。
 3. 启动 `npm run dev:desktop`，开始伴学并播放系统音频。
-4. 验证 `session.start` 后不会立刻出现字幕；只有客户端持续发送 `audio.frame` 后，mock 字幕才按累计音频时长依次出现。
-5. 停止会话后检查导出接口，例如 `/sessions/{sessionId}/export?format=json`，应包含音频用量、字幕段和修订记录。
+4. 验证 `session.start` 后不会立刻出现字幕；只有客户端持续发送 `audio.frame` 后，mock ASR 才按累计音频时长产生 partial/final。
+5. 字幕预期顺序：第一段出现 `draft`，随后同段更新为 `final`；累计到第二段 final 后，最近两段会在 15-30 秒 timer 或 stop flush 中更新为 `revised`。
+6. 停止会话后检查导出接口，例如 `/sessions/{sessionId}/export?format=json`，应包含音频用量、字幕段、`segment_revisions` 和 `usage_events`。
+7. 使用 PostgreSQL 时可直接检查：
+   - `subtitle_segments`：每个 `segment_id` 只有当前状态。
+   - `segment_revisions`：同一段有 draft/final/revised 多条历史。
+   - `usage_events`：包含 `asr_audio_duration`、`mt_input_tokens`、`mt_output_tokens`、`revision_tokens`。
 
 ### 阿里云 ASR + Qwen-MT 链路
 
@@ -105,12 +134,14 @@ npm run dev:desktop:web
    - `ALIBABA_OPENAI_BASE_URL`
    - `ALIBABA_ASR_MODEL=qwen3-asr-flash-realtime`
    - `ALIBABA_MT_MODEL=qwen-mt-flash`
+   - `ALIBABA_REVISION_MODEL=qwen-turbo`
    - `ALIBABA_ASR_INPUT_AUDIO_FORMAT=pcm`（Gateway 发送的是 PCM16 16 kHz mono 原始字节；阿里云 Qwen-ASR Realtime 的会话参数名使用 `pcm`）
-3. 运行 `npm run diagnose:config -w @lingua-bridge/gateway`，确认 `modelProvider` 是 `alibaba-cloud`、`hasApiKey` 是 `true`、`inputAudioFormat` 是 `pcm`，并确认 endpoint 与账号站点一致。中国站通常使用 `dashscope.aliyuncs.com`，国际站使用 `dashscope-intl.aliyuncs.com`。Gateway 会自动读取仓库根 `.env` 和 `apps/gateway/.env`，真实进程环境变量优先级最高。
-4. 启动前确认 4318 端口没有旧 Gateway：`Get-NetTCPConnection -LocalPort 4318`。如果被旧 `node.exe ... apps/gateway/src/main.ts` 占用，先 `Stop-Process -Id <PID>`，或临时设置 `PORT=4319` 并让桌面端使用同一个 WebSocket 地址。
-5. 启动 `npm run dev:gateway` 和 `npm run dev:desktop`，播放英文技术内容并开始伴学。Gateway 启动日志会输出当前 provider、模型名和 endpoint，但不会输出密钥。
-6. Gateway 会把 PCM16 16 kHz mono 音频帧转发到阿里云实时 ASR，收到 final ASR 文本后调用 Qwen-MT，再向客户端发 `subtitle.segment.updated`。如果已经连接但没有字幕，把 `LOG_LEVEL=debug` 后重启 Gateway，检查是否依次出现 `Alibaba Cloud realtime ASR session connected`、`session.updated`、`sent audio frame to Alibaba Cloud realtime ASR`、`input_audio_buffer.speech_started`、`conversation.item.input_audio_transcription.completed` 或 provider error。
-7. 记录 5 段技术样本的首句延迟、稳态延迟、术语错误和中断情况。`qwen3-asr-flash-realtime` 当前时间戳能力有限，字幕时间暂以 Gateway 收到的音频时长近似；若需要更稳定时间戳，继续评估 Fun-ASR/Paraformer。
+3. 如需降低草稿成本，可临时设置 `ALIBABA_TRANSLATE_DRAFTS=false`；默认 `true` 用于验证 `draft -> final -> revised` 全状态流。
+4. 运行 `npm run diagnose:config -w @lingua-bridge/gateway`，确认 `modelProvider` 是 `alibaba-cloud`、`hasApiKey` 是 `true`、`inputAudioFormat` 是 `pcm`、`revisionModel` 和 `subtitleRevisionIntervalMs` 正确，并确认 endpoint 与账号站点一致。中国站通常使用 `dashscope.aliyuncs.com`，国际站使用 `dashscope-intl.aliyuncs.com`。Gateway 会自动读取仓库根 `.env` 和 `apps/gateway/.env`，真实进程环境变量优先级最高。
+5. 启动前确认 4318 端口没有旧 Gateway：`Get-NetTCPConnection -LocalPort 4318`。如果被旧 `node.exe ... apps/gateway/src/main.ts` 占用，先 `Stop-Process -Id <PID>`；或临时设置 `PORT=4319`，并同步把仓库根 `.env` 中的 `VITE_GATEWAY_WS_URL` 改成 `ws://127.0.0.1:4319/realtime/sessions`。桌面端 Vite 配置会从仓库根 `.env` 读取这个变量。
+6. 启动 `npm run dev:gateway` 和 `npm run dev:desktop`，播放英文技术内容并开始伴学。Gateway 启动日志会输出当前 provider、模型名和 endpoint，但不会输出密钥。
+7. Gateway 会把 PCM16 16 kHz mono 音频帧转发到阿里云实时 ASR，收到 partial/final ASR 文本后调用 Qwen-MT，再向客户端发 `subtitle.segment.updated`；修订 timer 会把最近 2-4 段送入 revision provider，并只推送最近两段 `revised`。如果已经连接但没有字幕，把 `LOG_LEVEL=debug` 后重启 Gateway，检查是否依次出现 `Alibaba Cloud realtime ASR session connected`、`session.updated`、`sent audio frame to Alibaba Cloud realtime ASR`、`input_audio_buffer.speech_started`、`conversation.item.input_audio_transcription.text`、`conversation.item.input_audio_transcription.completed` 或 provider error。
+8. 记录 5 段技术样本的首句延迟、稳态延迟、术语错误和中断情况。`qwen3-asr-flash-realtime` 当前时间戳能力有限，字幕时间暂以 Gateway 收到的音频时长近似；若需要更稳定时间戳，继续评估 Fun-ASR/Paraformer。
 
 ### LiveTranslate Spike
 

@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import type {
   SubtitleSegmentStatus,
-  SubtitleSegmentUpdatedEvent
+  SubtitleSegmentUpdatedEvent,
+  TermEntry
 } from "@lingua-bridge/protocol";
 import { createId } from "../domain/ids";
 import {
@@ -251,6 +252,10 @@ export class InMemoryStore implements GatewayStore {
     };
     this.audioObjects.push(audioObject);
     return audioObject;
+  }
+
+  public listTermEntries(_userId: string): TermEntry[] {
+    return [];
   }
 
   public appendUsageEvent(input: UsageEventInput): UsageEvent {

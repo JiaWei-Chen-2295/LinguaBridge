@@ -31,8 +31,10 @@ async function main(): Promise<void> {
           openAiBaseUrl: config.model.alibabaCloud.openAiBaseUrl,
           asrModel: config.model.alibabaCloud.asrModel,
           mtModel: config.model.alibabaCloud.mtModel,
+          revisionModel: config.model.alibabaCloud.revisionModel,
           translateDrafts: config.model.alibabaCloud.translateDrafts
         },
+        subtitleRevisionIntervalMs: config.subtitleRevisionIntervalMs,
         liveTranslateSpikeEnabled: config.model.liveTranslateSpike.enabled
       },
       "LinguaBridge gateway listening"

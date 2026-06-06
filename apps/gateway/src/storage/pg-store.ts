@@ -2,7 +2,8 @@ import { Pool, type PoolClient, type QueryResult, type QueryResultRow } from "pg
 import type {
   ModelTrace,
   SubtitleSegmentStatus,
-  SubtitleSegmentUpdatedEvent
+  SubtitleSegmentUpdatedEvent,
+  TermEntry
 } from "@lingua-bridge/protocol";
 import { createId } from "../domain/ids";
 import {
@@ -131,6 +132,15 @@ interface UsageEventRow extends QueryResultRow {
   cost_estimate: string | number | null;
   metadata: unknown;
   created_at: Date;
+}
+
+interface TermEntryRow extends QueryResultRow {
+  id: string;
+  user_id: string | null;
+  source: string;
+  target: string | null;
+  mode: TermEntry["mode"];
+  aliases: string[];
 }
 
 interface UsageSumRow extends QueryResultRow {
@@ -490,6 +500,20 @@ export class PgStore implements GatewayStore {
     return this.insertUsageEvent(this.pool, input);
   }
 
+  public async listTermEntries(userId: string): Promise<TermEntry[]> {
+    const result = await this.pool.query<TermEntryRow>(
+      `
+        SELECT id, user_id, source, target, mode, aliases
+        FROM term_entries
+        WHERE user_id IS NULL OR user_id = $1
+        ORDER BY user_id NULLS FIRST, lower(source)
+      `,
+      [userId]
+    );
+
+    return result.rows.map(toTermEntry);
+  }
+
   public async getUsageSummary(userId: string): Promise<UsageSummary> {
     return this.getUsageSummaryFor(this.pool, userId);
   }
@@ -845,6 +869,22 @@ function toAudioObject(row: AudioObjectRow): SessionAudioObject {
     sizeBytes: Number(row.size_bytes),
     createdAt: row.created_at
   };
+}
+
+function toTermEntry(row: TermEntryRow): TermEntry {
+  const entry: TermEntry = {
+    id: row.id,
+    source: row.source,
+    mode: row.mode,
+    aliases: [...row.aliases]
+  };
+  if (row.user_id !== null) {
+    entry.userId = row.user_id;
+  }
+  if (row.target !== null) {
+    entry.target = row.target;
+  }
+  return entry;
 }
 
 function toSegment(
