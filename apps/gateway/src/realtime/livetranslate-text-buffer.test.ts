@@ -49,6 +49,37 @@ test("LiveTranslateTextBuffer ignores shorter non-final target rollback", () => 
   assert.equal(updated?.shortTextIgnored, true);
 });
 
+test("LiveTranslateTextBuffer applies shorter completed target text", () => {
+  const buffer = new LiveTranslateTextBuffer();
+
+  buffer.apply({
+    itemId: "item_1",
+    kind: "source",
+    phase: "completed",
+    text: "We are generating Chinese interpretation.",
+    receivedAtMs: 100
+  });
+  buffer.apply({
+    itemId: "item_1",
+    kind: "target",
+    phase: "draft",
+    text: "我们正在生成中文同传临时文本。",
+    receivedAtMs: 200
+  });
+  const finalSegment = buffer.apply({
+    itemId: "item_1",
+    kind: "target",
+    phase: "completed",
+    text: "我们正在生成中文同传。",
+    receivedAtMs: 300
+  });
+
+  assert.equal(finalSegment?.targetText, "我们正在生成中文同传。");
+  assert.equal(finalSegment?.changed, true);
+  assert.equal(finalSegment?.shortTextIgnored, false);
+  assert.equal(finalSegment?.status, "final");
+});
+
 test("LiveTranslateTextBuffer stays draft until both source and target complete", () => {
   const buffer = new LiveTranslateTextBuffer();
 

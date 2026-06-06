@@ -168,7 +168,7 @@ function snapshotSegment(
 function mergeStreamingText(
   previousText: string,
   incomingText: string,
-  _completed: boolean
+  completed: boolean
 ): MergeTextResult {
   if (previousText.length === 0) {
     return { text: incomingText, shortTextIgnored: false };
@@ -179,6 +179,10 @@ function mergeStreamingText(
   }
 
   if (incomingText.startsWith(previousText)) {
+    return { text: incomingText, shortTextIgnored: false };
+  }
+
+  if (completed && incomingText.length < previousText.length) {
     return { text: incomingText, shortTextIgnored: false };
   }
 
