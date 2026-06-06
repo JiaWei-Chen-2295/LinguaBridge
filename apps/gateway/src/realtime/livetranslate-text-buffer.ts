@@ -57,8 +57,6 @@ export class LiveTranslateTextBuffer {
     }
 
     const itemId = this.resolveItemId(update.itemId);
-    this.lastItemId = itemId;
-
     const segment = this.segmentFor(itemId, update.receivedAtMs);
     const sideCompleted =
       update.kind === "source"
@@ -67,6 +65,8 @@ export class LiveTranslateTextBuffer {
     if (update.phase !== "completed" && sideCompleted) {
       return snapshotSegment(segment, false, false);
     }
+
+    this.lastItemId = itemId;
 
     const currentText =
       update.kind === "source" ? segment.sourceText : segment.targetText;
@@ -213,7 +213,10 @@ function mergeStreamingText(
     };
   }
 
-  if (incomingText.length < previousText.length) {
+  if (
+    incomingText.length < previousText.length &&
+    previousText.includes(incomingText)
+  ) {
     return { text: previousText, shortTextIgnored: true };
   }
 

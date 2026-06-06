@@ -135,6 +135,28 @@ test("LiveTranslateTextBuffer ignores shorter non-final internal rollback", () =
   assert.equal(updated?.shortTextIgnored, true);
 });
 
+test("LiveTranslateTextBuffer appends valid shorter chunk continuation", () => {
+  const buffer = new LiveTranslateTextBuffer();
+
+  buffer.apply({
+    itemId: "item_1",
+    kind: "target",
+    phase: "draft",
+    text: "这是一个很长的",
+    receivedAtMs: 100
+  });
+  const updated = buffer.apply({
+    itemId: "item_1",
+    kind: "target",
+    phase: "draft",
+    text: "句子。",
+    receivedAtMs: 200
+  });
+
+  assert.equal(updated?.targetText, "这是一个很长的句子。");
+  assert.equal(updated?.changed, true);
+});
+
 test("LiveTranslateTextBuffer applies shorter completed target text", () => {
   const buffer = new LiveTranslateTextBuffer();
 
@@ -362,6 +384,49 @@ test("LiveTranslateTextBuffer ignores late source draft after source completion"
   assert.equal(updated?.sourceText, "A");
   assert.equal(updated?.status, "final");
   assert.equal(updated?.changed, false);
+});
+
+test("LiveTranslateTextBuffer keeps active item after stale explicit draft is ignored", () => {
+  const buffer = new LiveTranslateTextBuffer();
+
+  buffer.apply({
+    itemId: "item_1",
+    kind: "source",
+    phase: "completed",
+    text: "A",
+    receivedAtMs: 100
+  });
+  buffer.apply({
+    itemId: "item_1",
+    kind: "target",
+    phase: "completed",
+    text: "甲",
+    receivedAtMs: 200
+  });
+  buffer.apply({
+    itemId: "item_2",
+    kind: "source",
+    phase: "draft",
+    text: "Second",
+    receivedAtMs: 300
+  });
+  buffer.apply({
+    itemId: "item_1",
+    kind: "target",
+    phase: "draft",
+    text: "乙",
+    receivedAtMs: 400
+  });
+  const updated = buffer.apply({
+    kind: "target",
+    phase: "draft",
+    text: "第二句。",
+    receivedAtMs: 500
+  });
+
+  assert.equal(updated?.itemId, "item_2");
+  assert.equal(updated?.targetText, "第二句。");
+  assert.equal(updated?.status, "draft");
 });
 
 test("LiveTranslateTextBuffer keeps missing item_id events on the active item", () => {
