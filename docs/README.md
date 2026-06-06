@@ -10,13 +10,15 @@
 | [MVP 技术选型](./technical-selection-mvp.md) | 桌面端、音频采集、后端网关、阿里云模型链路、存储、邀请码和用量统计的技术方案。 |
 | [MVP 实现说明](./notes-mvp-implementation.md) | 当前代码骨架、开发入口、实现假设和 Phase 0 待验证事项。 |
 | [同声传译功能实现规划](./technical-simultaneous-interpretation-plan.md) | 基于最新联网资料整理的同传模型链路、第一版实现范围、Windows 音频风险和后续路线。 |
+| [Windows process-exclude loopback 实现规划](./technical-windows-process-exclude-loopback-plan.md) | 同传译音回灌规避的 Windows API 确认、Rust/Tauri 改造计划、降级策略和验收矩阵。 |
 
 ## 阅读顺序
 
 1. 先读 PRD，确认产品范围和商业约束。
 2. 再读技术选型，确认实现路径和 Phase 0 Spike 清单。
 3. 若评估或验证同传能力，再读同声传译功能规划。
-4. 开发前阅读根目录 [AGENTS.md](../AGENTS.md)，遵守项目级协作与代码规范。
+4. 若实现中文译音播放或回灌规避，再读 Windows process-exclude loopback 实现规划。
+5. 开发前阅读根目录 [AGENTS.md](../AGENTS.md)，遵守项目级协作与代码规范。
 
 ## 当前 MVP 决策摘要
 

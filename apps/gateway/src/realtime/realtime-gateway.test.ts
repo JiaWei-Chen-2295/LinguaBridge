@@ -152,6 +152,91 @@ test("session.stop waits for pending final subtitle persistence before exports",
   }
 });
 
+test("risk-accepted interpretation sessions persist echo diagnostics in usage metadata", async () => {
+  const config = loadConfig({
+    DEV_INVITE_CODE: "ALPHA-TEST",
+    DEV_INVITE_QUOTA_MINUTES: "180",
+    LOG_LEVEL: "silent",
+    MOCK_SUBTITLE_DELAY_MS: "1",
+    MODEL_PROVIDER: "mock",
+    OBJECT_STORAGE_PROVIDER: "disabled",
+    SUBTITLE_REVISION_INTERVAL_MS: "15000",
+    WEBSOCKET_PATH: "/realtime/sessions"
+  });
+  const app = fastify({ logger: false });
+  const store = new InMemoryStore({
+    devInviteCode: "ALPHA-TEST",
+    devInviteQuotaMinutes: 180
+  });
+  const objectStorage = new CapturingObjectStorage();
+  const artifactRecorder = new SessionArtifactRecorder(objectStorage);
+  registerRealtimeGateway(app, { config, store, artifactRecorder });
+
+  let socket: WebSocket | undefined;
+  try {
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    const address = app.server.address();
+    assert.ok(address !== null && typeof address !== "string");
+
+    socket = new WebSocket(
+      `ws://127.0.0.1:${(address as AddressInfo).port}${config.websocketPath}`
+    );
+    const reader = new ServerMessageReader(socket);
+    await waitForOpen(socket);
+    await reader.next("gateway.ready");
+
+    socket.send(
+      JSON.stringify({
+        type: "session.start",
+        version: 1,
+        requestId: "req_start",
+        payload: {
+          inviteCode: "ALPHA-TEST",
+          mode: "interpretation",
+          interpretation: {
+            outputAudio: true,
+            echoAvoidance: "disabled",
+            echoRiskAccepted: true
+          },
+          language: {
+            sourceLang: "en",
+            targetLang: "zh-CN"
+          },
+          device: {
+            os: "windows",
+            osVersion: "10.0.19045",
+            sampleRate: 16000,
+            channels: 1
+          },
+          privacyConsent: {
+            accepted: true,
+            acceptedAt: "2026-06-06T00:00:00.000Z",
+            retentionDays: 30,
+            cloudStorageRequired: true
+          }
+        }
+      })
+    );
+    const started = await reader.next("session.started");
+
+    const snapshot = store.getSessionSnapshot(started.payload.sessionId);
+    assert.ok(snapshot !== undefined);
+    const metadataEvent = snapshot.usageEvents.find(
+      (event) => event.eventType === "session_metadata"
+    );
+    assert.ok(metadataEvent !== undefined);
+    assert.deepEqual(metadataEvent.metadata, {
+      mode: "interpretation",
+      outputAudio: true,
+      echoAvoidance: "disabled",
+      echoRiskAccepted: true
+    });
+  } finally {
+    socket?.close();
+    await app.close();
+  }
+});
+
 class DelayedFinalSubtitleStore extends InMemoryStore {
   private readonly finalWriteResolvers: Array<() => void> = [];
   private readonly blockedFinalWriteWaiters: Array<() => void> = [];

@@ -19,6 +19,7 @@ export type InterpretationOptions = {
   outputAudio: boolean;
   voice?: string;
   echoAvoidance: "process_exclude" | "separate_device" | "disabled";
+  echoRiskAccepted?: boolean;
 };
 
 export type DeviceInfo = {
@@ -264,6 +265,7 @@ export type UsageEventType =
   | "interpretation_audio_duration"
   | "interpretation_audio_storage"
   | "session_realtime_duration"
+  | "session_metadata"
   | "session_interruption";
 
 export type UsageUnit = "milliseconds" | "tokens" | "bytes" | "count";
@@ -400,9 +402,13 @@ function isOptionalInterpretationOptions(value: unknown): boolean {
   return (
     typeof value.outputAudio === "boolean" &&
     (value.voice === undefined || typeof value.voice === "string") &&
+    (value.echoRiskAccepted === undefined || typeof value.echoRiskAccepted === "boolean") &&
     (value.echoAvoidance === "process_exclude" ||
       value.echoAvoidance === "separate_device" ||
-      value.echoAvoidance === "disabled")
+      value.echoAvoidance === "disabled") &&
+    (value.outputAudio !== true ||
+      value.echoAvoidance !== "disabled" ||
+      value.echoRiskAccepted === true)
   );
 }
 

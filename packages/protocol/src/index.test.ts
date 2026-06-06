@@ -30,6 +30,73 @@ test("accepts a valid session.start message", () => {
   assert.equal(isRealtimeClientMessage(message), true);
 });
 
+test("accepts risk-accepted interpretation audio with disabled echo avoidance", () => {
+  const message: RealtimeClientMessage = {
+    type: "session.start",
+    version: PROTOCOL_VERSION,
+    requestId: "req_001",
+    payload: {
+      inviteCode: "ALPHA-TEST",
+      mode: "interpretation",
+      interpretation: {
+        outputAudio: true,
+        echoAvoidance: "disabled",
+        echoRiskAccepted: true
+      },
+      language: {
+        sourceLang: "en",
+        targetLang: "zh-CN"
+      },
+      device: {
+        os: "windows",
+        sampleRate: 16000,
+        channels: 1
+      },
+      privacyConsent: {
+        accepted: true,
+        acceptedAt: "2026-06-05T00:00:00.000Z",
+        retentionDays: 30,
+        cloudStorageRequired: true
+      }
+    }
+  };
+
+  assert.equal(isRealtimeClientMessage(message), true);
+});
+
+test("rejects interpretation audio with disabled echo avoidance unless risk is accepted", () => {
+  const message = {
+    type: "session.start",
+    version: PROTOCOL_VERSION,
+    requestId: "req_001",
+    payload: {
+      inviteCode: "ALPHA-TEST",
+      mode: "interpretation",
+      interpretation: {
+        outputAudio: true,
+        echoAvoidance: "disabled"
+      },
+      language: {
+        sourceLang: "en",
+        targetLang: "zh-CN"
+      },
+      device: {
+        os: "windows",
+        sampleRate: 16000,
+        channels: 1
+      },
+      privacyConsent: {
+        accepted: true,
+        acceptedAt: "2026-06-05T00:00:00.000Z",
+        retentionDays: 30,
+        cloudStorageRequired: true
+      }
+    }
+  };
+
+  assert.equal(isRealtimeClientMessage(message), false);
+});
+
 test("rejects session.start without privacy consent", () => {
   const message = {
     type: "session.start",

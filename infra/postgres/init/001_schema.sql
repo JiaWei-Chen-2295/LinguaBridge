@@ -111,6 +111,7 @@ CREATE TABLE IF NOT EXISTS usage_events (
       'interpretation_audio_duration',
       'interpretation_audio_storage',
       'session_realtime_duration',
+      'session_metadata',
       'session_interruption'
     )
   ),

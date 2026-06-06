@@ -16,7 +16,7 @@
 | A. LiveTranslate 端到端链路 | 系统音频 -> Gateway -> `qwen3.5-livetranslate-flash-realtime` -> 中文文本 + 中文音频 | **优先 Spike**。官方文档显示该模型可通过 WebSocket 输入音频，并输出译文文本与译文音频；可配置源语言 ASR 原文返回。链路短，最适合验证同传体验。 |
 | B. ASR + MT + TTS 拆分链路 | 系统音频 -> ASR -> Qwen-MT -> Qwen-TTS/CosyVoice | 作为备选和会后高质量链路。术语、纠错、缓存和回放控制更强，但实时延迟、失败点和编排复杂度更高。 |
 
-第一技术风险不是模型接入，而是 **译音回灌**：LinguaBridge 播放的中文译音可能被 WASAPI loopback 再次捕获并送入模型，造成重复翻译、回声和成本浪费。第一版先用 Web Audio 播放中文译音以打通体验；后续必须优先验证 Windows 进程级 loopback 排除或音频路由隔离。
+第一技术风险不是模型接入，而是 **译音回灌**：LinguaBridge 播放的中文译音可能被 WASAPI loopback 再次捕获并送入模型，造成重复翻译、回声和成本浪费。第一版先用 Web Audio 播放中文译音以打通体验；后续必须优先验证 Windows 进程级 loopback 排除或音频路由隔离。具体实现拆分见 [Windows process-exclude loopback 实现规划](./technical-windows-process-exclude-loopback-plan.md)。
 
 ## 2. 最新联网依据
 
@@ -122,6 +122,8 @@ flowchart LR
 | 虚拟音频设备路由 | 旧 Windows 10 或高级用户 | 通过 VB-CABLE/VoiceMeeter 等隔离源音频和译音，操作成本高。 |
 
 正式内测前必须探测系统版本和 API 可用性。第一版已按需求默认播放中文译音，但会明确标注 Web Audio 播放存在回灌风险；稳定版本应在无法排除自身进程时降级为字幕模式或要求用户选择高级音频路由。
+
+process-exclude loopback 已拆成独立规划：同传稳定版应新增 `ActivateAudioInterfaceAsync` + `AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK` 捕获路径，并用 `PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE` 排除 LinguaBridge 进程树。最低系统要求 Windows 10 Build 20348；旧 Windows 10 默认不应进入“播放译音 + endpoint loopback”的危险组合。
 
 ### 5.2 译音播放
 
@@ -302,6 +304,8 @@ users/{userId}/sessions/{sessionId}/exports/interpretation.wav
 - 播放源视频 + LinguaBridge 中文译音时，捕获流不包含或极低包含自身译音。
 - Win10 19045 明确 fallback 行为。
 - 设备切换、蓝牙耳机、默认输出变化均有可解释状态。
+
+详细实施顺序：先做客户端能力探测与降级状态，再做 process loopback activation spike，最后把同传默认捕获切到 process-exclude。
 
 ### Spike 3：术语与质量对比
 

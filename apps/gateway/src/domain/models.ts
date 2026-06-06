@@ -17,6 +17,7 @@ export type UsageEventType =
   | "interpretation_audio_duration"
   | "interpretation_audio_storage"
   | "session_realtime_duration"
+  | "session_metadata"
   | "session_interruption";
 
 export type UsageUnit = "milliseconds" | "tokens" | "bytes" | "count";

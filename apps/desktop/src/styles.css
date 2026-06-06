@@ -359,6 +359,23 @@ button {
   line-height: 1.4;
 }
 
+.risk-confirm-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  color: #7b5b2a;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.risk-confirm-row input {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  accent-color: #b7791f;
+}
+
 .section-heading {
   display: flex;
   align-items: center;
