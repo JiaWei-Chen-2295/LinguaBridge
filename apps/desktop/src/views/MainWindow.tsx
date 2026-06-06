@@ -42,7 +42,8 @@ import {
 import {
   hideOverlayWindow,
   isOverlayWindowVisible,
-  showOverlayWindow
+  showOverlayWindow,
+  toOverlayWindowFeedbackMessage
 } from "../services/overlayWindow";
 import { publishOverlaySubtitles } from "../services/overlaySubtitle";
 import {
@@ -421,12 +422,7 @@ export function MainWindow(): ReactElement {
       setOverlayVisible(true);
       setFeedback("悬浮字幕窗已显示。");
     } catch (error) {
-      const commandError = toAudioCommandError(error);
-      setFeedback(
-        error instanceof Error
-          ? getRuntimeFeedbackMessage(error.message)
-          : getAudioFeedbackMessage(commandError)
-      );
+      setFeedback(toOverlayWindowFeedbackMessage(error));
     }
   }
 
