@@ -38,6 +38,8 @@ interface MergeTextResult {
   shortTextIgnored: boolean;
 }
 
+const MIN_STREAMING_TEXT_OVERLAP_LENGTH = 2;
+
 export class LiveTranslateTextBuffer {
   private readonly segments = new Map<
     string,
@@ -50,7 +52,7 @@ export class LiveTranslateTextBuffer {
     update: LiveTranslateTextUpdate
   ): LiveTranslateBufferedSegment | undefined {
     const incomingText = normalizeText(update.text);
-    if (incomingText.length === 0) {
+    if (incomingText.length === 0 && update.phase !== "completed") {
       return undefined;
     }
 
@@ -60,11 +62,14 @@ export class LiveTranslateTextBuffer {
     const segment = this.segmentFor(itemId, update.receivedAtMs);
     const currentText =
       update.kind === "source" ? segment.sourceText : segment.targetText;
-    const merged = mergeStreamingText(
-      currentText,
-      incomingText,
-      update.phase === "completed"
-    );
+    const merged =
+      incomingText.length === 0
+        ? { text: currentText, shortTextIgnored: false }
+        : mergeStreamingText(
+            currentText,
+            incomingText,
+            update.phase === "completed"
+          );
     const textChanged = merged.text !== currentText;
 
     if (textChanged) {
@@ -188,8 +193,20 @@ function mergeStreamingText(
     return { text: incomingText, shortTextIgnored: false };
   }
 
-  if (completed && incomingText.length < previousText.length) {
+  const overlapLength = suffixPrefixOverlapLength(previousText, incomingText);
+  if (overlapLength >= MIN_STREAMING_TEXT_OVERLAP_LENGTH) {
+    return {
+      text: `${previousText}${incomingText.slice(overlapLength)}`,
+      shortTextIgnored: false
+    };
+  }
+
+  if (completed) {
     return { text: incomingText, shortTextIgnored: false };
+  }
+
+  if (incomingText.length < previousText.length) {
+    return { text: previousText, shortTextIgnored: true };
   }
 
   if (previousText.startsWith(incomingText)) {
@@ -198,14 +215,6 @@ function mergeStreamingText(
 
   if (previousText.endsWith(incomingText)) {
     return { text: previousText, shortTextIgnored: false };
-  }
-
-  const overlapLength = suffixPrefixOverlapLength(previousText, incomingText);
-  if (overlapLength > 0) {
-    return {
-      text: `${previousText}${incomingText.slice(overlapLength)}`,
-      shortTextIgnored: false
-    };
   }
 
   return {

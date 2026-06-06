@@ -68,6 +68,27 @@ test("LiveTranslateTextBuffer merges English suffix-prefix overlap", () => {
   assert.equal(updated?.sourceText, "Hello world");
 });
 
+test("LiveTranslateTextBuffer does not merge one-character English overlap", () => {
+  const buffer = new LiveTranslateTextBuffer();
+
+  buffer.apply({
+    itemId: "item_1",
+    kind: "source",
+    phase: "draft",
+    text: "cat",
+    receivedAtMs: 100
+  });
+  const updated = buffer.apply({
+    itemId: "item_1",
+    kind: "source",
+    phase: "draft",
+    text: "the dog",
+    receivedAtMs: 200
+  });
+
+  assert.equal(updated?.sourceText, "cat the dog");
+});
+
 test("LiveTranslateTextBuffer ignores shorter non-final target rollback", () => {
   const buffer = new LiveTranslateTextBuffer();
 
@@ -87,6 +108,29 @@ test("LiveTranslateTextBuffer ignores shorter non-final target rollback", () => 
   });
 
   assert.equal(updated?.targetText, "我们正在生成中文同传。");
+  assert.equal(updated?.changed, false);
+  assert.equal(updated?.shortTextIgnored, true);
+});
+
+test("LiveTranslateTextBuffer ignores shorter non-final internal rollback", () => {
+  const buffer = new LiveTranslateTextBuffer();
+
+  buffer.apply({
+    itemId: "item_1",
+    kind: "source",
+    phase: "draft",
+    text: "We are generating Chinese interpretation",
+    receivedAtMs: 100
+  });
+  const updated = buffer.apply({
+    itemId: "item_1",
+    kind: "source",
+    phase: "draft",
+    text: "generating Chinese",
+    receivedAtMs: 200
+  });
+
+  assert.equal(updated?.sourceText, "We are generating Chinese interpretation");
   assert.equal(updated?.changed, false);
   assert.equal(updated?.shortTextIgnored, true);
 });
@@ -120,6 +164,66 @@ test("LiveTranslateTextBuffer applies shorter completed target text", () => {
   assert.equal(finalSegment?.changed, true);
   assert.equal(finalSegment?.shortTextIgnored, false);
   assert.equal(finalSegment?.status, "final");
+});
+
+test("LiveTranslateTextBuffer replaces draft with completed semantic target text", () => {
+  const buffer = new LiveTranslateTextBuffer();
+
+  buffer.apply({
+    itemId: "item_1",
+    kind: "source",
+    phase: "completed",
+    text: "Final source.",
+    receivedAtMs: 100
+  });
+  buffer.apply({
+    itemId: "item_1",
+    kind: "target",
+    phase: "draft",
+    text: "临时草稿一",
+    receivedAtMs: 200
+  });
+  const finalSegment = buffer.apply({
+    itemId: "item_1",
+    kind: "target",
+    phase: "completed",
+    text: "最终译文更长一些。",
+    receivedAtMs: 300
+  });
+
+  assert.equal(finalSegment?.targetText, "最终译文更长一些。");
+  assert.equal(finalSegment?.status, "final");
+});
+
+test("LiveTranslateTextBuffer marks empty completed target while retaining draft text", () => {
+  const buffer = new LiveTranslateTextBuffer();
+
+  buffer.apply({
+    itemId: "item_1",
+    kind: "source",
+    phase: "completed",
+    text: "We are generating Chinese interpretation.",
+    receivedAtMs: 100
+  });
+  buffer.apply({
+    itemId: "item_1",
+    kind: "target",
+    phase: "draft",
+    text: "我们正在生成中文同传。",
+    receivedAtMs: 200
+  });
+  const finalSegment = buffer.apply({
+    itemId: "item_1",
+    kind: "target",
+    phase: "completed",
+    text: "",
+    receivedAtMs: 300
+  });
+
+  assert.equal(finalSegment?.targetText, "我们正在生成中文同传。");
+  assert.equal(finalSegment?.targetCompleted, true);
+  assert.equal(finalSegment?.status, "final");
+  assert.equal(finalSegment?.changed, true);
 });
 
 test("LiveTranslateTextBuffer stays draft until both source and target complete", () => {
