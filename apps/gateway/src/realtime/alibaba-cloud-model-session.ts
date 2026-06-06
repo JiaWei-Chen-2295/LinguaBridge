@@ -1,22 +1,28 @@
-import type {
-  ModelTrace,
-  SubtitleSegmentStatus,
-  SubtitleSegmentUpdatedEvent
-} from "@lingua-bridge/protocol";
+import type { ModelTrace } from "@lingua-bridge/protocol";
 import type { FastifyBaseLogger } from "fastify";
 import { WebSocket } from "ws";
 import type { AlibabaCloudModelConfig } from "../config";
 import type {
+  AsrTextEvent,
+  RealtimeAsrProvider,
+  RealtimeAsrProviderCallbacks,
   RealtimeAudioFramePayload,
-  RealtimeModelSession,
-  RealtimeModelSessionCallbacks,
-  RealtimeModelSessionContext
-} from "./model-session";
+  ReviseContextInput,
+  RevisionModelResult,
+  SegmentRevisionResult,
+  SubtitleProviderError,
+  SubtitleTextProvider,
+  TextModelResult,
+  TranslateInput
+} from "./subtitle-engine";
 
-interface AlibabaCloudRealtimeModelSessionInput {
+interface AlibabaCloudRealtimeAsrProviderInput {
   config: AlibabaCloudModelConfig;
-  context: RealtimeModelSessionContext;
-  callbacks: RealtimeModelSessionCallbacks;
+  log: FastifyBaseLogger;
+}
+
+interface AlibabaCloudTextProviderInput {
+  config: AlibabaCloudModelConfig;
   log: FastifyBaseLogger;
 }
 
@@ -102,7 +108,7 @@ interface QwenAsrUnknownEvent {
   rawType?: string;
 }
 
-interface TranslationResponse {
+interface ChatCompletionResponse {
   choices?: Array<{
     message?: {
       content?: string;
@@ -115,17 +121,19 @@ interface TranslationResponse {
   };
 }
 
-export class AlibabaCloudRealtimeModelSession implements RealtimeModelSession {
+interface RevisionResponseBody {
+  segments?: SegmentRevisionResult[];
+}
+
+export class AlibabaCloudRealtimeAsrProvider implements RealtimeAsrProvider {
+  private callbacks: RealtimeAsrProviderCallbacks | undefined;
   private socket: WebSocket | undefined;
-  private startedAtMs = Date.now();
   private audioCursorMs = 0;
   private frameCount = 0;
-  private segmentIndex = 0;
   private stopped = false;
   private readonly itemStartMs = new Map<string, number>();
   private readonly itemEndMs = new Map<string, number>();
   private readonly draftTextByItemId = new Map<string, string>();
-  private readonly pendingEvents = new Set<Promise<void>>();
   private sessionUpdatedResolver: (() => void) | undefined;
   private sessionUpdatedRejecter: ((error: Error) => void) | undefined;
   private finishedResolver: (() => void) | undefined;
@@ -133,14 +141,14 @@ export class AlibabaCloudRealtimeModelSession implements RealtimeModelSession {
     this.finishedResolver = resolve;
   });
 
-  public constructor(private readonly input: AlibabaCloudRealtimeModelSessionInput) {}
+  public constructor(private readonly input: AlibabaCloudRealtimeAsrProviderInput) {}
 
-  public async start(): Promise<void> {
+  public async start(callbacks: RealtimeAsrProviderCallbacks): Promise<void> {
     if (this.input.config.apiKey === undefined) {
       throw new Error("Alibaba Cloud API key is not configured.");
     }
 
-    this.startedAtMs = Date.now();
+    this.callbacks = callbacks;
     const socket = new WebSocket(this.buildRealtimeUrl(), {
       headers: {
         Authorization: `Bearer ${this.input.config.apiKey}`,
@@ -194,9 +202,9 @@ export class AlibabaCloudRealtimeModelSession implements RealtimeModelSession {
         cleanup();
         this.input.log.info(
           {
-            sessionId: this.input.context.sessionId,
             asrModel: this.input.config.asrModel,
             mtModel: this.input.config.mtModel,
+            revisionModel: this.input.config.revisionModel,
             inputAudioFormat: this.input.config.inputAudioFormat,
             asrWebsocketUrl: redactUrlQuery(this.input.config.asrWebsocketUrl),
             openAiBaseUrl: this.input.config.openAiBaseUrl
@@ -227,7 +235,6 @@ export class AlibabaCloudRealtimeModelSession implements RealtimeModelSession {
     if (this.frameCount === 1 || this.frameCount % 50 === 0) {
       this.input.log.debug(
         {
-          sessionId: this.input.context.sessionId,
           framesSent: this.frameCount,
           audioCursorMs: this.audioCursorMs,
           frameDurationMs: frame.durationMs
@@ -260,12 +267,7 @@ export class AlibabaCloudRealtimeModelSession implements RealtimeModelSession {
       );
     }
 
-    await Promise.race([
-      this.finished,
-      wait(this.input.config.requestTimeoutMs)
-    ]);
-    await Promise.allSettled(Array.from(this.pendingEvents));
-
+    await Promise.race([this.finished, wait(this.input.config.requestTimeoutMs)]);
     if (
       this.socket?.readyState === WebSocket.OPEN ||
       this.socket?.readyState === WebSocket.CONNECTING
@@ -281,23 +283,12 @@ export class AlibabaCloudRealtimeModelSession implements RealtimeModelSession {
       return;
     }
 
-    if (event.type !== "unknown") {
-      this.input.log.debug(
-        {
-          sessionId: this.input.context.sessionId,
-          eventType: event.type
-        },
-        "received Alibaba Cloud realtime ASR event"
-      );
-    } else {
-      this.input.log.debug(
-        {
-          sessionId: this.input.context.sessionId,
-          eventType: event.rawType ?? "unknown"
-        },
-        "received unsupported Alibaba Cloud realtime ASR event"
-      );
-    }
+    this.input.log.debug(
+      {
+        eventType: event.type === "unknown" ? event.rawType ?? "unknown" : event.type
+      },
+      "received Alibaba Cloud realtime ASR event"
+    );
 
     if (event.type === "input_audio_buffer.speech_started") {
       this.recordSpeechStart(event as QwenAsrSpeechStartedEvent);
@@ -310,12 +301,12 @@ export class AlibabaCloudRealtimeModelSession implements RealtimeModelSession {
     }
 
     if (event.type === "conversation.item.input_audio_transcription.text") {
-      this.handleAsrDraft(event as QwenAsrTextEvent);
+      await this.handleAsrPartial(event as QwenAsrTextEvent);
       return;
     }
 
     if (event.type === "conversation.item.input_audio_transcription.completed") {
-      this.trackPending(this.handleAsrFinal(event as QwenAsrCompletedEvent));
+      await this.handleAsrFinal(event as QwenAsrCompletedEvent);
       return;
     }
 
@@ -331,17 +322,17 @@ export class AlibabaCloudRealtimeModelSession implements RealtimeModelSession {
 
     if (event.type === "error") {
       const errorEvent = event as QwenAsrErrorEvent;
-      const message = alibabaCloudErrorMessage(
+      const messageText = alibabaCloudErrorMessage(
         errorEvent.error,
         "Alibaba Cloud ASR returned an error."
       );
       if (this.sessionUpdatedRejecter !== undefined) {
-        this.sessionUpdatedRejecter(new Error(message));
+        this.sessionUpdatedRejecter(new Error(messageText));
         return;
       }
 
       this.reportProviderError(
-        message,
+        messageText,
         "Check model provider credentials, endpoint region, model name, and request parameters.",
         errorEvent.error
       );
@@ -360,23 +351,19 @@ export class AlibabaCloudRealtimeModelSession implements RealtimeModelSession {
 
   private recordSpeechStart(event: QwenAsrSpeechStartedEvent): void {
     const itemId = event.item_id;
-    if (itemId === undefined) {
-      return;
+    if (itemId !== undefined) {
+      this.itemStartMs.set(itemId, event.audio_start_ms ?? this.audioCursorMs);
     }
-
-    this.itemStartMs.set(itemId, event.audio_start_ms ?? this.audioCursorMs);
   }
 
   private recordSpeechStop(event: QwenAsrSpeechStoppedEvent): void {
     const itemId = event.item_id;
-    if (itemId === undefined) {
-      return;
+    if (itemId !== undefined) {
+      this.itemEndMs.set(itemId, event.audio_end_ms ?? this.audioCursorMs);
     }
-
-    this.itemEndMs.set(itemId, event.audio_end_ms ?? this.audioCursorMs);
   }
 
-  private handleAsrDraft(event: QwenAsrTextEvent): void {
+  private async handleAsrPartial(event: QwenAsrTextEvent): Promise<void> {
     const itemId = event.item_id;
     const sourceText = `${event.text ?? ""}${event.stash ?? ""}`.trim();
     if (
@@ -388,20 +375,7 @@ export class AlibabaCloudRealtimeModelSession implements RealtimeModelSession {
     }
 
     this.draftTextByItemId.set(itemId, sourceText);
-    if (!this.input.config.translateDrafts) {
-      return;
-    }
-
-    this.trackPending(
-      this.translate(sourceText).then((targetText) =>
-        this.emitSubtitle({
-          itemId,
-          sourceText,
-          targetText,
-          status: "draft"
-        })
-      )
-    );
+    await this.callbacks?.onPartial(this.asrTextEvent(itemId, sourceText, 0.72));
   }
 
   private async handleAsrFinal(event: QwenAsrCompletedEvent): Promise<void> {
@@ -409,7 +383,6 @@ export class AlibabaCloudRealtimeModelSession implements RealtimeModelSession {
     if (sourceText === undefined || sourceText.length === 0) {
       this.input.log.warn(
         {
-          sessionId: this.input.context.sessionId,
           itemId: event.item_id
         },
         "Alibaba Cloud ASR completed with an empty transcript"
@@ -417,103 +390,31 @@ export class AlibabaCloudRealtimeModelSession implements RealtimeModelSession {
       return;
     }
 
+    const itemId = event.item_id ?? createEventId("item");
     this.input.log.info(
       {
-        sessionId: this.input.context.sessionId,
-        itemId: event.item_id,
+        itemId,
         sourceLength: sourceText.length
       },
       "Alibaba Cloud ASR final transcript received"
     );
-    const targetText = await this.translate(sourceText);
-    await this.emitSubtitle({
-      itemId: event.item_id,
-      sourceText,
-      targetText,
-      status: "final"
-    });
+    await this.callbacks?.onFinal(this.asrTextEvent(itemId, sourceText, 0.9));
   }
 
-  private async translate(sourceText: string): Promise<string> {
-    const response = await fetch(`${this.input.config.openAiBaseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${this.input.config.apiKey ?? ""}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: this.input.config.mtModel,
-        messages: [
-          {
-            role: "user",
-            content: sourceText
-          }
-        ],
-        translation_options: {
-          source_lang: "English",
-          target_lang: "Chinese"
-        }
-      }),
-      signal: AbortSignal.timeout(this.input.config.requestTimeoutMs)
-    });
-
-    if (!response.ok) {
-      const body = await response.text().catch(() => "");
-      throw new Error(`Qwen-MT request failed with HTTP ${response.status}: ${body}`);
-    }
-
-    const payload = (await response.json()) as TranslationResponse;
-    const targetText = payload.choices?.[0]?.message?.content?.trim();
-    if (targetText === undefined || targetText.length === 0) {
-      throw new Error("Qwen-MT returned an empty translation.");
-    }
-
-    this.input.log.debug(
-      {
-        sessionId: this.input.context.sessionId,
-        sourceLength: sourceText.length,
-        targetLength: targetText.length,
-        promptTokens: payload.usage?.prompt_tokens,
-        completionTokens: payload.usage?.completion_tokens
-      },
-      "Qwen-MT translation completed"
-    );
-    return targetText;
-  }
-
-  private async emitSubtitle(input: {
-    itemId: string | undefined;
-    sourceText: string;
-    targetText: string;
-    status: SubtitleSegmentStatus;
-  }): Promise<void> {
-    const itemId = input.itemId ?? `item_${this.segmentIndex + 1}`;
+  private asrTextEvent(
+    itemId: string,
+    sourceText: string,
+    confidence: number
+  ): AsrTextEvent {
     const startAtMs = this.itemStartMs.get(itemId) ?? Math.max(0, this.audioCursorMs - 2_000);
     const endAtMs = Math.max(startAtMs + 1, this.itemEndMs.get(itemId) ?? this.audioCursorMs);
-    const revision = input.status === "revised" ? 2 : 1;
-    const segmentId =
-      input.itemId !== undefined ? sanitizeSegmentId(input.itemId) : nextSegmentId(++this.segmentIndex);
-
-    const event: SubtitleSegmentUpdatedEvent = {
-      type: "subtitle.segment.updated",
-      version: 1,
-      payload: {
-        sessionId: this.input.context.sessionId,
-        segmentId,
-        status: input.status,
-        sourceText: input.sourceText,
-        targetText: input.targetText,
-        startAtMs,
-        endAtMs,
-        revision,
-        confidence: input.status === "draft" ? 0.7 : 0.9,
-        termsHit: detectTechnicalTerms(input.sourceText),
-        latencyMs: Math.max(0, Date.now() - this.startedAtMs - endAtMs),
-        modelTrace: this.modelTrace()
-      }
+    return {
+      itemId,
+      sourceText,
+      startAtMs,
+      endAtMs,
+      confidence
     };
-
-    await this.input.callbacks.onSubtitleEvent(event);
   }
 
   private sendSessionUpdate(): void {
@@ -545,35 +446,126 @@ export class AlibabaCloudRealtimeModelSession implements RealtimeModelSession {
     )}`;
   }
 
-  private modelTrace(): ModelTrace {
-    return {
+  private reportProviderError(
+    message: string,
+    nextStep: string,
+    cause?: unknown
+  ): void {
+    const error: SubtitleProviderError = { message, nextStep };
+    if (cause !== undefined) {
+      error.cause = cause;
+    }
+    this.callbacks?.onError(error);
+  }
+}
+
+export class AlibabaCloudSubtitleTextProvider implements SubtitleTextProvider {
+  public constructor(private readonly input: AlibabaCloudTextProviderInput) {}
+
+  public async translate(input: TranslateInput): Promise<TextModelResult> {
+    const response = await this.chatCompletion({
+      model: this.input.config.mtModel,
+      messages: [
+        {
+          role: "user",
+          content: input.sourceText
+        }
+      ],
+      translation_options: {
+        source_lang: "English",
+        target_lang: "Chinese"
+      }
+    });
+    const text = readChatContent(response, "Qwen-MT returned an empty translation.");
+    this.input.log.info(
+      {
+        sourceLength: input.sourceText.length,
+        targetLength: text.length,
+        promptTokens: response.usage?.prompt_tokens,
+        completionTokens: response.usage?.completion_tokens,
+        glossaryLength: input.glossary.length
+      },
+      "Qwen-MT translation completed"
+    );
+    const result: TextModelResult = { text };
+    const usage = toTextUsage(response);
+    if (usage !== undefined) {
+      result.usage = usage;
+    }
+    return result;
+  }
+
+  public async revise(input: ReviseContextInput): Promise<RevisionModelResult> {
+    const response = await this.chatCompletion({
+      model: this.input.config.revisionModel,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content:
+            "Revise recent subtitle translations using nearby context. Only rewrite requested target segment IDs. Return strict JSON."
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            sourceLang: input.sourceLang,
+            targetLang: input.targetLang,
+            glossary: input.glossary,
+            contextSegments: input.contextSegments,
+            targetSegmentIds: input.targetSegmentIds,
+            outputShape: {
+              segments: [
+                {
+                  segmentId: "string",
+                  targetText: "string"
+                }
+              ]
+            }
+          })
+        }
+      ]
+    });
+    const content = readChatContent(response, "Qwen revision returned an empty response.");
+    const parsed = readRevisionBody(content);
+    const result: RevisionModelResult = {
+      segments: parsed.segments ?? []
+    };
+    const usage = toTextUsage(response);
+    if (usage !== undefined) {
+      result.usage = usage;
+    }
+    return result;
+  }
+
+  public modelTrace(kind: "translation" | "revision"): ModelTrace {
+    const trace: ModelTrace = {
       provider: "alibaba-cloud",
       asrModel: this.input.config.asrModel,
       mtModel: this.input.config.mtModel
     };
+    if (kind === "revision") {
+      trace.correctionModel = this.input.config.revisionModel;
+    }
+    return trace;
   }
 
-  private reportProviderError(message: string, nextStep: string, cause?: unknown): void {
-    this.input.callbacks.onProviderError({
-      message,
-      nextStep,
-      cause
+  private async chatCompletion(body: Record<string, unknown>): Promise<ChatCompletionResponse> {
+    const response = await fetch(`${this.input.config.openAiBaseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.input.config.apiKey ?? ""}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(this.input.config.requestTimeoutMs)
     });
-  }
 
-  private trackPending(promise: Promise<void>): void {
-    this.pendingEvents.add(promise);
-    promise
-      .catch((error: unknown) => {
-        this.reportProviderError(
-          "Alibaba Cloud subtitle generation failed.",
-          "Check ASR/Qwen-MT credentials, region, quota, and request logs.",
-          error
-        );
-      })
-      .finally(() => {
-        this.pendingEvents.delete(promise);
-      });
+    if (!response.ok) {
+      const bodyText = await response.text().catch(() => "");
+      throw new Error(`Alibaba Cloud chat completion failed with HTTP ${response.status}: ${bodyText}`);
+    }
+
+    return (await response.json()) as ChatCompletionResponse;
   }
 }
 
@@ -618,12 +610,68 @@ function isKnownQwenAsrEventType(
   );
 }
 
-function nextSegmentId(index: number): string {
-  return `seg_alibaba_${String(index).padStart(4, "0")}`;
+function readChatContent(
+  payload: ChatCompletionResponse,
+  emptyMessage: string
+): string {
+  const content = payload.choices?.[0]?.message?.content?.trim();
+  if (content === undefined || content.length === 0) {
+    throw new Error(emptyMessage);
+  }
+  return content;
 }
 
-function sanitizeSegmentId(itemId: string): string {
-  return itemId.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80);
+function readRevisionBody(value: string): RevisionResponseBody {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return {};
+    }
+
+    const record = parsed as Record<string, unknown>;
+    if (!Array.isArray(record.segments)) {
+      return {};
+    }
+
+    const segments: Array<{ segmentId: string; targetText: string }> = [];
+    for (const segment of record.segments) {
+      if (
+        typeof segment !== "object" ||
+        segment === null ||
+        Array.isArray(segment)
+      ) {
+        continue;
+      }
+
+      const segmentRecord = segment as Record<string, unknown>;
+      const segmentId = segmentRecord.segmentId;
+      const targetText = segmentRecord.targetText;
+      if (
+        typeof segmentId === "string" &&
+        typeof targetText === "string" &&
+        targetText.trim().length > 0
+      ) {
+        segments.push({ segmentId, targetText });
+      }
+    }
+    return { segments };
+  } catch {
+    return {};
+  }
+}
+
+function toTextUsage(response: ChatCompletionResponse): TextModelResult["usage"] {
+  const usage: NonNullable<TextModelResult["usage"]> = {};
+  if (response.usage?.prompt_tokens !== undefined) {
+    usage.inputTokens = response.usage.prompt_tokens;
+  }
+  if (response.usage?.completion_tokens !== undefined) {
+    usage.outputTokens = response.usage.completion_tokens;
+  }
+  if (response.usage?.total_tokens !== undefined) {
+    usage.totalTokens = response.usage.total_tokens;
+  }
+  return Object.keys(usage).length > 0 ? usage : undefined;
 }
 
 function createEventId(prefix: string): string {
@@ -641,24 +689,6 @@ function alibabaCloudErrorMessage(
 ): string {
   const message = error?.message ?? fallback;
   return error?.code === undefined ? message : `${error.code}: ${message}`;
-}
-
-function detectTechnicalTerms(sourceText: string): string[] {
-  const candidates = [
-    "API",
-    "Kubernetes",
-    "React",
-    "TypeScript",
-    "Rust",
-    "WebSocket",
-    "PostgreSQL",
-    "Redis",
-    "Docker",
-    "Tauri",
-    "Qwen"
-  ];
-  const lowerSource = sourceText.toLowerCase();
-  return candidates.filter((term) => lowerSource.includes(term.toLowerCase()));
 }
 
 function wait(durationMs: number): Promise<void> {

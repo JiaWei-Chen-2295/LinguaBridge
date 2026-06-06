@@ -1,6 +1,5 @@
 import type { FastifyInstance } from "fastify";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
-import { estimateTranslationTokens } from "@lingua-bridge/mock-models";
 import type {
   GatewayErrorCode,
   GatewayErrorEvent,
@@ -26,7 +25,8 @@ import {
   createRealtimeModelSession,
   getRealtimeModelProviderIssue,
   type RealtimeModelProviderError,
-  type RealtimeModelSession
+  type RealtimeModelSession,
+  type RealtimeModelUsageEvent
 } from "./model-session";
 import { parseRealtimeClientMessage } from "./ws-messages";
 
@@ -210,6 +210,7 @@ class RealtimeConnection {
       userId: resolved.user.id,
       sessionId: session.id
     });
+    const termEntries = await this.deps.store.listTermEntries(resolved.user.id);
 
     this.modelSession = createRealtimeModelSession({
       config: this.deps.config,
@@ -220,8 +221,10 @@ class RealtimeConnection {
       },
       callbacks: {
         onSubtitleEvent: (event) => this.handleSubtitleEvent(event),
+        onUsageEvent: (event) => this.handleModelUsageEvent(event),
         onProviderError: (error) => this.sendModelProviderError(error)
       },
+      termEntries,
       log: this.app.log
     });
 
@@ -380,48 +383,48 @@ class RealtimeConnection {
       return;
     }
 
-    this.recordModelUsage(event);
-    await this.deps.store.recordSubtitleEvent(event);
-    await this.persistTranscriptSnapshot(event.payload.sessionId);
     this.sendEvent(event);
+    this.app.log.info(
+      {
+        sessionId: event.payload.sessionId,
+        segmentId: event.payload.segmentId,
+        status: event.payload.status,
+        revision: event.payload.revision,
+        sourceLength: event.payload.sourceText.length,
+        targetLength: event.payload.targetText.length,
+        latencyMs: event.payload.latencyMs
+      },
+      "subtitle segment emitted"
+    );
+
+    void this.persistSubtitleEvent(event).catch((error: unknown) => {
+      this.app.log.warn(
+        {
+          error,
+          sessionId: event.payload.sessionId,
+          segmentId: event.payload.segmentId,
+          status: event.payload.status,
+          revision: event.payload.revision
+        },
+        "subtitle event persistence failed"
+      );
+    });
   }
 
-  private recordModelUsage(event: SubtitleSegmentUpdatedEvent): void {
-    if (this.userId === undefined) {
+  private handleModelUsageEvent(event: RealtimeModelUsageEvent): void {
+    if (this.userId === undefined || this.sessionId === undefined) {
       return;
     }
 
-    if (event.payload.status === "final" || event.payload.status === "revised") {
-      this.recordUsageEvent({
-        userId: this.userId,
-        sessionId: event.payload.sessionId,
-        eventType: "mt_input_tokens",
-        amount: estimateTranslationTokens(event.payload.sourceText),
-        unit: "tokens",
-        model: event.payload.modelTrace.mtModel
-      });
-      this.recordUsageEvent({
-        userId: this.userId,
-        sessionId: event.payload.sessionId,
-        eventType: "mt_output_tokens",
-        amount: estimateTranslationTokens(event.payload.targetText),
-        unit: "tokens",
-        model: event.payload.modelTrace.mtModel
-      });
-    }
-
-    if (event.payload.status === "revised") {
-      this.recordUsageEvent({
-        userId: this.userId,
-        sessionId: event.payload.sessionId,
-        eventType: "revision_tokens",
-        amount: estimateTranslationTokens(
-          `${event.payload.sourceText} ${event.payload.targetText}`
-        ),
-        unit: "tokens",
-        model: event.payload.modelTrace.correctionModel ?? "gateway-reviser"
-      });
-    }
+    this.recordUsageEvent({
+      userId: this.userId,
+      sessionId: this.sessionId,
+      eventType: event.eventType,
+      amount: event.amount,
+      unit: event.unit,
+      model: event.model,
+      metadata: event.metadata
+    });
   }
 
   private async finalizeActiveSession(
@@ -476,6 +479,17 @@ class RealtimeConnection {
     }
 
     this.providerErrorSent = true;
+    this.app.log.warn(
+      {
+        error: error.cause,
+        sessionId: this.sessionId,
+        userId: this.userId,
+        requestId,
+        message: error.message,
+        nextStep: error.nextStep
+      },
+      "realtime model provider error"
+    );
     this.sendError(
       "model_provider_unavailable",
       error.message,
@@ -546,6 +560,13 @@ class RealtimeConnection {
     }
 
     await this.deps.artifactRecorder.persistTranscriptSnapshot(snapshot);
+  }
+
+  private async persistSubtitleEvent(
+    event: SubtitleSegmentUpdatedEvent
+  ): Promise<void> {
+    await this.deps.store.recordSubtitleEvent(event);
+    await this.persistTranscriptSnapshot(event.payload.sessionId);
   }
 
   private sendReady(): void {

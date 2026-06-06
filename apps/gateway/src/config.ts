@@ -17,6 +17,7 @@ export interface GatewayConfig {
   websocketPath: string;
   wsMaxPayloadBytes: number;
   mockSubtitleDelayMs: number;
+  subtitleRevisionIntervalMs: number;
   devInviteCode: string;
   devInviteQuotaMinutes: number;
   databaseUrl?: string;
@@ -33,6 +34,7 @@ export type AlibabaAsrModel =
   | "paraformer-realtime-v2";
 export type AlibabaAsrInputAudioFormat = "pcm";
 export type AlibabaMtModel = "qwen-mt-flash" | "qwen-mt-lite" | "qwen-mt-plus";
+export type AlibabaRevisionModel = "qwen-plus" | "qwen-turbo";
 
 export interface ModelConfig {
   provider: ModelProvider;
@@ -46,6 +48,7 @@ export interface AlibabaCloudModelConfig {
   openAiBaseUrl: string;
   asrModel: AlibabaAsrModel;
   mtModel: AlibabaMtModel;
+  revisionModel: AlibabaRevisionModel;
   inputAudioFormat: AlibabaAsrInputAudioFormat;
   asrVadThreshold: number;
   asrSilenceDurationMs: number;
@@ -86,6 +89,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = loadGatewayEnv()): GatewayCo
     websocketPath: readString(env, "WEBSOCKET_PATH", "/realtime/sessions"),
     wsMaxPayloadBytes: readInteger(env, "WS_MAX_PAYLOAD_BYTES", 1_048_576),
     mockSubtitleDelayMs: readInteger(env, "MOCK_SUBTITLE_DELAY_MS", 300),
+    subtitleRevisionIntervalMs: readInteger(
+      env,
+      "SUBTITLE_REVISION_INTERVAL_MS",
+      20_000
+    ),
     devInviteCode: readString(env, "DEV_INVITE_CODE", "ALPHA-DEV-2026"),
     devInviteQuotaMinutes: readInteger(env, "DEV_INVITE_QUOTA_MINUTES", 180),
     databaseUrlConfigured: databaseUrl !== undefined,
@@ -215,6 +223,11 @@ function readModelConfig(env: NodeJS.ProcessEnv): ModelConfig {
       "qwen3-asr-flash-realtime"
     ),
     mtModel: readAlibabaMtModel(env, "ALIBABA_MT_MODEL", "qwen-mt-flash"),
+    revisionModel: readAlibabaRevisionModel(
+      env,
+      "ALIBABA_REVISION_MODEL",
+      "qwen-turbo"
+    ),
     inputAudioFormat: readAlibabaAsrInputAudioFormat(
       env,
       "ALIBABA_ASR_INPUT_AUDIO_FORMAT",
@@ -226,7 +239,7 @@ function readModelConfig(env: NodeJS.ProcessEnv): ModelConfig {
       "ALIBABA_ASR_SILENCE_DURATION_MS",
       400
     ),
-    translateDrafts: readBoolean(env, "ALIBABA_TRANSLATE_DRAFTS", false),
+    translateDrafts: readBoolean(env, "ALIBABA_TRANSLATE_DRAFTS", true),
     requestTimeoutMs: readInteger(env, "ALIBABA_REQUEST_TIMEOUT_MS", 15_000)
   };
 
@@ -487,6 +500,19 @@ function readAlibabaMtModel(
     raw === "qwen-mt-plus"
     ? raw
     : fallback;
+}
+
+function readAlibabaRevisionModel(
+  env: NodeJS.ProcessEnv,
+  key: string,
+  fallback: AlibabaRevisionModel
+): AlibabaRevisionModel {
+  const raw = env[key];
+  if (!hasNonEmptyString(raw)) {
+    return fallback;
+  }
+
+  return raw === "qwen-plus" || raw === "qwen-turbo" ? raw : fallback;
 }
 
 function readAlibabaAsrInputAudioFormat(

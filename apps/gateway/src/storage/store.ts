@@ -1,4 +1,8 @@
-import type { DeviceInfo, SubtitleSegmentUpdatedEvent } from "@lingua-bridge/protocol";
+import type {
+  DeviceInfo,
+  SubtitleSegmentUpdatedEvent,
+  TermEntry
+} from "@lingua-bridge/protocol";
 import type {
   RealtimeSession,
   SegmentRevision,
@@ -85,6 +89,7 @@ export interface GatewayStore {
   recordSessionAudioObject(
     input: RecordSessionAudioObjectInput
   ): MaybePromise<SessionAudioObject | undefined>;
+  listTermEntries(userId: string): MaybePromise<TermEntry[]>;
   appendUsageEvent(input: UsageEventInput): MaybePromise<UsageEvent>;
   getUsageSummary(userId: string): MaybePromise<UsageSummary>;
   hasUser(userId: string): MaybePromise<boolean>;

@@ -1,11 +1,22 @@
 import type {
   RealtimeAudioFrameMessage,
-  SubtitleSegmentUpdatedEvent
+  SubtitleSegmentUpdatedEvent,
+  TermEntry
 } from "@lingua-bridge/protocol";
 import type { FastifyBaseLogger } from "fastify";
 import type { GatewayConfig } from "../config";
-import { AlibabaCloudRealtimeModelSession } from "./alibaba-cloud-model-session";
-import { MockRealtimeModelSession } from "./mock-model-session";
+import {
+  AlibabaCloudRealtimeAsrProvider,
+  AlibabaCloudSubtitleTextProvider
+} from "./alibaba-cloud-model-session";
+import {
+  MockRealtimeAsrProvider,
+  MockSubtitleTextProvider
+} from "./mock-model-session";
+import {
+  SubtitleEngine,
+  type RealtimeModelUsageEvent
+} from "./subtitle-engine";
 
 export type RealtimeAudioFramePayload = RealtimeAudioFrameMessage["payload"];
 
@@ -23,6 +34,7 @@ export interface RealtimeModelSessionContext {
 
 export interface RealtimeModelSessionCallbacks {
   onSubtitleEvent(event: SubtitleSegmentUpdatedEvent): Promise<void>;
+  onUsageEvent(event: RealtimeModelUsageEvent): void;
   onProviderError(error: RealtimeModelProviderError): void;
 }
 
@@ -36,6 +48,7 @@ export interface CreateRealtimeModelSessionInput {
   config: GatewayConfig;
   context: RealtimeModelSessionContext;
   callbacks: RealtimeModelSessionCallbacks;
+  termEntries: TermEntry[];
   log: FastifyBaseLogger;
 }
 
@@ -43,20 +56,37 @@ export function createRealtimeModelSession(
   input: CreateRealtimeModelSessionInput
 ): RealtimeModelSession {
   if (input.config.model.provider === "alibaba-cloud") {
-    return new AlibabaCloudRealtimeModelSession({
-      config: input.config.model.alibabaCloud,
+    return new SubtitleEngine({
       context: input.context,
       callbacks: input.callbacks,
+      termEntries: input.termEntries,
+      translateDrafts: input.config.model.alibabaCloud.translateDrafts,
+      revisionIntervalMs: input.config.subtitleRevisionIntervalMs,
+      asrProvider: new AlibabaCloudRealtimeAsrProvider({
+        config: input.config.model.alibabaCloud,
+        log: input.log
+      }),
+      textProvider: new AlibabaCloudSubtitleTextProvider({
+        config: input.config.model.alibabaCloud,
+        log: input.log
+      }),
       log: input.log
     });
   }
 
-  return new MockRealtimeModelSession({
-    delayAudioMs: input.config.mockSubtitleDelayMs,
+  return new SubtitleEngine({
     context: input.context,
-    callbacks: input.callbacks
+    callbacks: input.callbacks,
+    termEntries: input.termEntries,
+    translateDrafts: true,
+    revisionIntervalMs: input.config.subtitleRevisionIntervalMs,
+    asrProvider: new MockRealtimeAsrProvider(input.config.mockSubtitleDelayMs),
+    textProvider: new MockSubtitleTextProvider(),
+    log: input.log
   });
 }
+
+export type { RealtimeModelUsageEvent };
 
 export function getRealtimeModelProviderIssue(
   config: GatewayConfig
