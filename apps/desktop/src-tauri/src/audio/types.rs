@@ -12,6 +12,7 @@ pub struct AudioCaptureConfig {
     pub sample_rate_hz: u32,
     pub channels: u16,
     pub frame_duration_ms: u16,
+    pub mode: AudioCaptureMode,
 }
 
 impl Default for AudioCaptureConfig {
@@ -21,8 +22,48 @@ impl Default for AudioCaptureConfig {
             sample_rate_hz: 16_000,
             channels: 1,
             frame_duration_ms: 20,
+            mode: AudioCaptureMode::EndpointLoopback,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AudioCaptureMode {
+    EndpointLoopback,
+    ProcessExcludeLoopback,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioCaptureCapabilities {
+    pub endpoint_loopback: AudioLoopbackCapability,
+    pub process_exclude_loopback: ProcessExcludeLoopbackCapability,
+    pub windows_build: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioLoopbackCapability {
+    pub supported: bool,
+    pub reason: Option<AudioCaptureCapabilityReason>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessExcludeLoopbackCapability {
+    pub supported: bool,
+    pub reason: Option<AudioCaptureCapabilityReason>,
+    pub minimum_build: u32,
+    pub current_build: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AudioCaptureCapabilityReason {
+    UnsupportedOs,
+    ActivationFailed,
+    NotWindows,
 }
 
 #[derive(Debug, Clone, Serialize)]

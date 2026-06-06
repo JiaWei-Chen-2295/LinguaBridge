@@ -2,8 +2,8 @@ use std::sync::Mutex;
 
 use super::error::{AudioCaptureError, AudioCaptureErrorKind};
 use super::types::{
-    AudioCaptureConfig, AudioCaptureStatus, AudioCaptureStatusKind, AudioDevice,
-    AUDIO_CAPTURE_STATUS_EVENT,
+    AudioCaptureCapabilities, AudioCaptureConfig, AudioCaptureStatus, AudioCaptureStatusKind,
+    AudioDevice, AUDIO_CAPTURE_STATUS_EVENT,
 };
 use super::wasapi;
 use tauri::{AppHandle, Emitter};
@@ -16,6 +16,10 @@ pub struct AudioState {
 impl AudioState {
     pub fn list_devices(&self) -> Result<Vec<AudioDevice>, AudioCaptureError> {
         wasapi::list_loopback_devices()
+    }
+
+    pub fn capabilities(&self) -> AudioCaptureCapabilities {
+        wasapi::get_audio_capture_capabilities()
     }
 
     pub fn status(&self) -> Result<AudioCaptureStatus, AudioCaptureError> {

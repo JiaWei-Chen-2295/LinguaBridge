@@ -9,28 +9,43 @@ use tauri::{AppHandle, Emitter};
 
 use super::error::{AudioCaptureError, AudioCaptureErrorKind};
 use super::types::{
-    AudioCaptureConfig, AudioCaptureStatus, AudioCaptureStatusKind, AudioDevice, AudioDeviceKind,
-    AudioDeviceStatus, AudioFramePayload, AUDIO_CAPTURE_STATUS_EVENT, AUDIO_FRAME_EVENT,
+    AudioCaptureCapabilities, AudioCaptureCapabilityReason, AudioCaptureConfig, AudioCaptureMode,
+    AudioCaptureStatus, AudioCaptureStatusKind, AudioDevice, AudioDeviceKind, AudioDeviceStatus,
+    AudioFramePayload, AudioLoopbackCapability, ProcessExcludeLoopbackCapability,
+    AUDIO_CAPTURE_STATUS_EVENT, AUDIO_FRAME_EVENT,
 };
 
 #[cfg(windows)]
 use windows::{
-    core::{BSTR, GUID, PCWSTR},
+    core::{implement, Interface, BSTR, GUID, HRESULT, PCWSTR, PROPVARIANT},
     Win32::{
         Devices::FunctionDiscovery::PKEY_Device_FriendlyName,
+        Foundation::CloseHandle,
         Media::{
             Audio::{
-                eConsole, eRender, IAudioCaptureClient, IAudioClient, IMMDevice,
-                IMMDeviceEnumerator, MMDeviceEnumerator, AUDCLNT_BUFFERFLAGS_SILENT,
-                AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, DEVICE_STATE_ACTIVE,
-                WAVEFORMATEX, WAVEFORMATEXTENSIBLE, WAVE_FORMAT_PCM,
+                eConsole, eRender, ActivateAudioInterfaceAsync,
+                IActivateAudioInterfaceAsyncOperation, IActivateAudioInterfaceCompletionHandler,
+                IActivateAudioInterfaceCompletionHandler_Impl, IAudioCaptureClient, IAudioClient,
+                IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, AUDCLNT_BUFFERFLAGS_SILENT,
+                AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
+                AUDCLNT_STREAMFLAGS_LOOPBACK, AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+                AUDIOCLIENT_ACTIVATION_PARAMS, AUDIOCLIENT_ACTIVATION_PARAMS_0,
+                AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK, AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS,
+                DEVICE_STATE_ACTIVE, PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
+                VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, WAVEFORMATEX, WAVEFORMATEXTENSIBLE,
+                WAVE_FORMAT_PCM,
             },
             KernelStreaming::KSDATAFORMAT_SUBTYPE_PCM,
         },
         System::Com::{
-            CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
-            COINIT_MULTITHREADED, STGM_READ,
+            CoCreateInstance, CoInitializeEx, CoTaskMemAlloc, CoTaskMemFree, CoUninitialize,
+            CLSCTX_ALL, COINIT_MULTITHREADED, STGM_READ,
         },
+        System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+            TH32CS_SNAPPROCESS,
+        },
+        System::Threading::GetCurrentProcessId,
     },
 };
 
@@ -42,9 +57,32 @@ const KSDATAFORMAT_SUBTYPE_IEEE_FLOAT_GUID: GUID =
     GUID::from_u128(0x00000003_0000_0010_8000_00aa00389b71);
 
 #[cfg(windows)]
+const PROCESS_EXCLUDE_LOOPBACK_MINIMUM_BUILD: u32 = 20_348;
+
+#[cfg(windows)]
+const PROCESS_LOOPBACK_CAPTURE_SAMPLE_RATE_HZ: u32 = 44_100;
+
+#[cfg(windows)]
+const PROCESS_LOOPBACK_CAPTURE_CHANNELS: u16 = 2;
+
+#[cfg(windows)]
+const PROCESS_LOOPBACK_CAPTURE_BITS_PER_SAMPLE: u16 = 16;
+
+#[cfg(windows)]
+const VT_BLOB: u16 = 65;
+
+#[cfg(windows)]
 struct CaptureThread {
     stop: Arc<AtomicBool>,
     join: JoinHandle<Result<(), AudioCaptureError>>,
+}
+
+#[cfg(windows)]
+#[derive(Clone)]
+struct ProcessSnapshotEntry {
+    process_id: u32,
+    parent_process_id: u32,
+    exe_file: String,
 }
 
 #[cfg(windows)]
@@ -53,6 +91,68 @@ static CAPTURE_THREAD: OnceLock<Mutex<Option<CaptureThread>>> = OnceLock::new();
 pub struct CaptureStartInfo {
     pub device_id: String,
     pub started_at_ms: u64,
+}
+
+#[cfg(windows)]
+pub fn get_audio_capture_capabilities() -> AudioCaptureCapabilities {
+    let windows_build = windows_build_number();
+    let process_exclude_loopback = match windows_build {
+        Some(build) if build >= PROCESS_EXCLUDE_LOOPBACK_MINIMUM_BUILD => {
+            if process_exclude_loopback_activation_supported() {
+                ProcessExcludeLoopbackCapability {
+                    supported: true,
+                    reason: None,
+                    minimum_build: PROCESS_EXCLUDE_LOOPBACK_MINIMUM_BUILD,
+                    current_build: Some(build),
+                }
+            } else {
+                ProcessExcludeLoopbackCapability {
+                    supported: false,
+                    reason: Some(AudioCaptureCapabilityReason::ActivationFailed),
+                    minimum_build: PROCESS_EXCLUDE_LOOPBACK_MINIMUM_BUILD,
+                    current_build: Some(build),
+                }
+            }
+        }
+        Some(build) => ProcessExcludeLoopbackCapability {
+            supported: false,
+            reason: Some(AudioCaptureCapabilityReason::UnsupportedOs),
+            minimum_build: PROCESS_EXCLUDE_LOOPBACK_MINIMUM_BUILD,
+            current_build: Some(build),
+        },
+        None => ProcessExcludeLoopbackCapability {
+            supported: false,
+            reason: Some(AudioCaptureCapabilityReason::UnsupportedOs),
+            minimum_build: PROCESS_EXCLUDE_LOOPBACK_MINIMUM_BUILD,
+            current_build: None,
+        },
+    };
+
+    AudioCaptureCapabilities {
+        endpoint_loopback: AudioLoopbackCapability {
+            supported: true,
+            reason: None,
+        },
+        process_exclude_loopback,
+        windows_build,
+    }
+}
+
+#[cfg(not(windows))]
+pub fn get_audio_capture_capabilities() -> AudioCaptureCapabilities {
+    AudioCaptureCapabilities {
+        endpoint_loopback: AudioLoopbackCapability {
+            supported: false,
+            reason: Some(AudioCaptureCapabilityReason::NotWindows),
+        },
+        process_exclude_loopback: ProcessExcludeLoopbackCapability {
+            supported: false,
+            reason: Some(AudioCaptureCapabilityReason::NotWindows),
+            minimum_build: 20_348,
+            current_build: None,
+        },
+        windows_build: None,
+    }
 }
 
 #[cfg(windows)]
@@ -276,6 +376,23 @@ fn run_capture_loop(
     stop: Arc<AtomicBool>,
     ready_tx: &std::sync::mpsc::Sender<Result<CaptureStartInfo, AudioCaptureError>>,
 ) -> Result<(), AudioCaptureError> {
+    match config.mode {
+        AudioCaptureMode::EndpointLoopback => {
+            run_endpoint_capture_loop(config, app, stop, ready_tx)
+        }
+        AudioCaptureMode::ProcessExcludeLoopback => {
+            run_process_exclude_capture_loop(config, app, stop, ready_tx)
+        }
+    }
+}
+
+#[cfg(windows)]
+fn run_endpoint_capture_loop(
+    config: AudioCaptureConfig,
+    app: AppHandle,
+    stop: Arc<AtomicBool>,
+    ready_tx: &std::sync::mpsc::Sender<Result<CaptureStartInfo, AudioCaptureError>>,
+) -> Result<(), AudioCaptureError> {
     let _com = ComApartment::initialize()?;
     let enumerator = create_device_enumerator()?;
     let default_device_id = default_output_device_id(&enumerator)?;
@@ -325,6 +442,79 @@ fn run_capture_loop(
         &mix_format,
         &mut emitter,
         default_output_tracker.as_mut(),
+        &stop,
+    );
+
+    unsafe {
+        let _ = audio_client.Stop();
+    }
+
+    if let Err(error) = &capture_result {
+        emit_capture_status_error(&app, &config, &active_device_id, started_at_ms, error);
+    }
+
+    capture_result
+}
+
+#[cfg(windows)]
+fn run_process_exclude_capture_loop(
+    config: AudioCaptureConfig,
+    app: AppHandle,
+    stop: Arc<AtomicBool>,
+    ready_tx: &std::sync::mpsc::Sender<Result<CaptureStartInfo, AudioCaptureError>>,
+) -> Result<(), AudioCaptureError> {
+    let _com = ComApartment::initialize()?;
+    let current_build = windows_build_number();
+    if !matches!(current_build, Some(build) if build >= PROCESS_EXCLUDE_LOOPBACK_MINIMUM_BUILD) {
+        return Err(AudioCaptureError::new(
+            AudioCaptureErrorKind::WasapiUnavailable,
+            "Windows process-exclude loopback requires Windows 10 Build 20348 or newer.",
+            true,
+        ));
+    }
+
+    let enumerator = create_device_enumerator()?;
+    let current_process_id = unsafe { GetCurrentProcessId() };
+    let target_process_id = process_loopback_exclusion_target(current_process_id);
+    let active_device_id =
+        format!("process-exclude-loopback:{target_process_id}:owner:{current_process_id}");
+    let audio_client = activate_process_exclude_audio_client(target_process_id)?;
+    let (wave_format, mix_format, stream_flags) = process_loopback_capture_format_and_flags();
+
+    unsafe {
+        audio_client
+            .Initialize(
+                AUDCLNT_SHAREMODE_SHARED,
+                stream_flags,
+                1_000_000,
+                0,
+                &wave_format,
+                None,
+            )
+            .map_err(|error| windows_error(AudioCaptureErrorKind::WasapiUnavailable, error))?;
+    }
+
+    let capture_client: IAudioCaptureClient = unsafe { audio_client.GetService() }
+        .map_err(|error| windows_error(AudioCaptureErrorKind::WasapiUnavailable, error))?;
+    let mut emitter = FrameEmitter::new(config.clone(), mix_format.sample_rate, app.clone());
+
+    unsafe {
+        audio_client
+            .Start()
+            .map_err(|error| windows_error(AudioCaptureErrorKind::WasapiUnavailable, error))?;
+    }
+    let started_at_ms = now_ms();
+    let _ = ready_tx.send(Ok(CaptureStartInfo {
+        device_id: active_device_id.clone(),
+        started_at_ms,
+    }));
+
+    let capture_result = pump_capture_packets(
+        &enumerator,
+        &capture_client,
+        &mix_format,
+        &mut emitter,
+        None,
         &stop,
     );
 
@@ -400,6 +590,277 @@ fn pump_capture_packets(
 fn create_device_enumerator() -> Result<IMMDeviceEnumerator, AudioCaptureError> {
     unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL) }
         .map_err(|error| windows_error(AudioCaptureErrorKind::WasapiUnavailable, error))
+}
+
+#[cfg(windows)]
+fn probe_process_exclude_loopback_activation() -> Result<(), AudioCaptureError> {
+    let _com = ComApartment::initialize()?;
+    let current_process_id = unsafe { GetCurrentProcessId() };
+    let audio_client = activate_process_exclude_audio_client(current_process_id)?;
+    drop(audio_client);
+    Ok(())
+}
+
+#[cfg(windows)]
+fn process_exclude_loopback_activation_supported() -> bool {
+    matches!(
+        thread::spawn(probe_process_exclude_loopback_activation).join(),
+        Ok(Ok(()))
+    )
+}
+
+#[cfg(windows)]
+fn process_loopback_exclusion_target(current_process_id: u32) -> u32 {
+    match process_snapshot_entries() {
+        Ok(entries) => select_process_loopback_exclusion_target(current_process_id, &entries),
+        Err(_) => current_process_id,
+    }
+}
+
+#[cfg(windows)]
+fn select_process_loopback_exclusion_target(
+    current_process_id: u32,
+    entries: &[ProcessSnapshotEntry],
+) -> u32 {
+    entries
+        .iter()
+        .find(|entry| {
+            entry.parent_process_id == current_process_id
+                && entry.exe_file.eq_ignore_ascii_case("msedgewebview2.exe")
+        })
+        .map(|entry| entry.process_id)
+        .unwrap_or(current_process_id)
+}
+
+#[cfg(windows)]
+fn process_snapshot_entries() -> Result<Vec<ProcessSnapshotEntry>, AudioCaptureError> {
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }
+        .map_err(|error| windows_error(AudioCaptureErrorKind::WasapiUnavailable, error))?;
+    let mut entry = PROCESSENTRY32W {
+        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+        ..PROCESSENTRY32W::default()
+    };
+    let mut entries = Vec::new();
+
+    let mut has_entry = unsafe { Process32FirstW(snapshot, &mut entry).is_ok() };
+    while has_entry {
+        entries.push(ProcessSnapshotEntry {
+            process_id: entry.th32ProcessID,
+            parent_process_id: entry.th32ParentProcessID,
+            exe_file: process_entry_exe_file(&entry),
+        });
+        has_entry = unsafe { Process32NextW(snapshot, &mut entry).is_ok() };
+    }
+
+    unsafe {
+        let _ = CloseHandle(snapshot);
+    }
+
+    Ok(entries)
+}
+
+#[cfg(windows)]
+fn process_entry_exe_file(entry: &PROCESSENTRY32W) -> String {
+    let nul_index = entry
+        .szExeFile
+        .iter()
+        .position(|value| *value == 0)
+        .unwrap_or(entry.szExeFile.len());
+
+    String::from_utf16_lossy(&entry.szExeFile[..nul_index])
+}
+
+#[cfg(windows)]
+fn process_loopback_capture_format_and_flags() -> (WAVEFORMATEX, MixFormat, u32) {
+    // Process loopback's virtual audio client can return E_NOTIMPL for GetMixFormat.
+    let block_align =
+        PROCESS_LOOPBACK_CAPTURE_CHANNELS * (PROCESS_LOOPBACK_CAPTURE_BITS_PER_SAMPLE / 8);
+    let wave_format = WAVEFORMATEX {
+        wFormatTag: WAVE_FORMAT_PCM as u16,
+        nChannels: PROCESS_LOOPBACK_CAPTURE_CHANNELS,
+        nSamplesPerSec: PROCESS_LOOPBACK_CAPTURE_SAMPLE_RATE_HZ,
+        nAvgBytesPerSec: PROCESS_LOOPBACK_CAPTURE_SAMPLE_RATE_HZ * block_align as u32,
+        nBlockAlign: block_align,
+        wBitsPerSample: PROCESS_LOOPBACK_CAPTURE_BITS_PER_SAMPLE,
+        cbSize: 0,
+    };
+    let mix_format = MixFormat {
+        sample_rate: PROCESS_LOOPBACK_CAPTURE_SAMPLE_RATE_HZ,
+        channels: PROCESS_LOOPBACK_CAPTURE_CHANNELS,
+        block_align,
+        sample_kind: SampleKind::Int16,
+    };
+    let stream_flags = AUDCLNT_STREAMFLAGS_LOOPBACK
+        | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
+        | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
+
+    (wave_format, mix_format, stream_flags)
+}
+
+#[cfg(windows)]
+fn activate_process_exclude_audio_client(
+    target_process_id: u32,
+) -> Result<IAudioClient, AudioCaptureError> {
+    let activation_params = ProcessLoopbackActivationParams::new(target_process_id)?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let completion_handler: IActivateAudioInterfaceCompletionHandler =
+        ProcessLoopbackActivationHandler::new(tx).into();
+    let _operation = unsafe {
+        ActivateAudioInterfaceAsync(
+            VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
+            &IAudioClient::IID,
+            Some(activation_params.as_propvariant()),
+            &completion_handler,
+        )
+    }
+    .map_err(|error| windows_error(AudioCaptureErrorKind::WasapiUnavailable, error))?;
+
+    let raw_audio_client = rx.recv_timeout(Duration::from_secs(3)).map_err(|_| {
+        AudioCaptureError::new(
+            AudioCaptureErrorKind::WasapiUnavailable,
+            "Windows process-exclude loopback activation did not complete within 3 seconds.",
+            true,
+        )
+    })??;
+
+    Ok(unsafe { IAudioClient::from_raw(raw_audio_client as *mut _) })
+}
+
+#[cfg(windows)]
+struct ProcessLoopbackActivationParams {
+    propvariant: PROPVARIANT,
+}
+
+#[cfg(windows)]
+impl ProcessLoopbackActivationParams {
+    fn new(target_process_id: u32) -> Result<Self, AudioCaptureError> {
+        let params_size = std::mem::size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>();
+        let params_ptr = unsafe { CoTaskMemAlloc(params_size) };
+        if params_ptr.is_null() {
+            return Err(AudioCaptureError::new(
+                AudioCaptureErrorKind::WasapiUnavailable,
+                "Windows could not allocate process loopback activation parameters.",
+                true,
+            ));
+        }
+
+        unsafe {
+            params_ptr.cast::<AUDIOCLIENT_ACTIVATION_PARAMS>().write(
+                AUDIOCLIENT_ACTIVATION_PARAMS {
+                    ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
+                    Anonymous: AUDIOCLIENT_ACTIVATION_PARAMS_0 {
+                        ProcessLoopbackParams: AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS {
+                            TargetProcessId: target_process_id,
+                            ProcessLoopbackMode: PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
+                        },
+                    },
+                },
+            );
+        }
+
+        let raw = windows::core::imp::PROPVARIANT {
+            Anonymous: windows::core::imp::PROPVARIANT_0 {
+                Anonymous: windows::core::imp::PROPVARIANT_0_0 {
+                    vt: VT_BLOB,
+                    wReserved1: 0,
+                    wReserved2: 0,
+                    wReserved3: 0,
+                    Anonymous: windows::core::imp::PROPVARIANT_0_0_0 {
+                        blob: windows::core::imp::BLOB {
+                            cbSize: params_size as u32,
+                            pBlobData: params_ptr.cast(),
+                        },
+                    },
+                },
+            },
+        };
+
+        Ok(Self {
+            propvariant: unsafe { PROPVARIANT::from_raw(raw) },
+        })
+    }
+
+    fn as_propvariant(&self) -> *const PROPVARIANT {
+        &self.propvariant
+    }
+}
+
+#[cfg(windows)]
+#[implement(IActivateAudioInterfaceCompletionHandler)]
+struct ProcessLoopbackActivationHandler {
+    sender: Mutex<Option<std::sync::mpsc::Sender<Result<usize, AudioCaptureError>>>>,
+}
+
+#[cfg(windows)]
+impl ProcessLoopbackActivationHandler {
+    fn new(sender: std::sync::mpsc::Sender<Result<usize, AudioCaptureError>>) -> Self {
+        Self {
+            sender: Mutex::new(Some(sender)),
+        }
+    }
+}
+
+#[cfg(windows)]
+impl IActivateAudioInterfaceCompletionHandler_Impl for ProcessLoopbackActivationHandler_Impl {
+    fn ActivateCompleted(
+        &self,
+        activateoperation: Option<&IActivateAudioInterfaceAsyncOperation>,
+    ) -> windows::core::Result<()> {
+        let result = activateoperation
+            .ok_or_else(|| {
+                AudioCaptureError::new(
+                    AudioCaptureErrorKind::WasapiUnavailable,
+                    "Windows process-exclude loopback activation completed without an operation.",
+                    true,
+                )
+            })
+            .and_then(read_process_loopback_activation_result);
+
+        if let Ok(mut sender) = self.sender.lock() {
+            if let Some(sender) = sender.take() {
+                let _ = sender.send(result);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn read_process_loopback_activation_result(
+    operation: &IActivateAudioInterfaceAsyncOperation,
+) -> Result<usize, AudioCaptureError> {
+    let mut activate_result = HRESULT(0);
+    let mut activated_interface = None;
+    unsafe {
+        operation
+            .GetActivateResult(&mut activate_result, &mut activated_interface)
+            .map_err(|error| windows_error(AudioCaptureErrorKind::WasapiUnavailable, error))?;
+    }
+
+    if activate_result.is_err() {
+        return Err(AudioCaptureError::new(
+            AudioCaptureErrorKind::WasapiUnavailable,
+            format!(
+                "Windows process-exclude loopback activation failed with HRESULT 0x{:08X}.",
+                activate_result.0 as u32
+            ),
+            true,
+        ));
+    }
+
+    let activated_interface = activated_interface.ok_or_else(|| {
+        AudioCaptureError::new(
+            AudioCaptureErrorKind::WasapiUnavailable,
+            "Windows process-exclude loopback activation returned no audio client.",
+            true,
+        )
+    })?;
+    let audio_client: IAudioClient = activated_interface
+        .cast()
+        .map_err(|error| windows_error(AudioCaptureErrorKind::WasapiUnavailable, error))?;
+
+    Ok(audio_client.into_raw() as usize)
 }
 
 #[cfg(windows)]
@@ -843,6 +1304,115 @@ fn sample_error() -> AudioCaptureError {
 #[cfg(windows)]
 fn windows_error(kind: AudioCaptureErrorKind, error: windows::core::Error) -> AudioCaptureError {
     AudioCaptureError::new(kind, format!("Windows audio API failed: {error}"), true)
+}
+
+#[cfg(windows)]
+fn windows_build_number() -> Option<u32> {
+    #[repr(C)]
+    struct OsVersionInfo {
+        dw_os_version_info_size: u32,
+        dw_major_version: u32,
+        dw_minor_version: u32,
+        dw_build_number: u32,
+        dw_platform_id: u32,
+        sz_csd_version: [u16; 128],
+    }
+
+    #[link(name = "ntdll")]
+    extern "system" {
+        fn RtlGetVersion(version_information: *mut OsVersionInfo) -> i32;
+    }
+
+    let mut version_info = OsVersionInfo {
+        dw_os_version_info_size: std::mem::size_of::<OsVersionInfo>() as u32,
+        dw_major_version: 0,
+        dw_minor_version: 0,
+        dw_build_number: 0,
+        dw_platform_id: 0,
+        sz_csd_version: [0; 128],
+    };
+
+    let status = unsafe { RtlGetVersion(&mut version_info) };
+    (status >= 0).then_some(version_info.dw_build_number)
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use windows::Win32::Media::Audio::{
+        AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM, AUDCLNT_STREAMFLAGS_LOOPBACK,
+        AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+    };
+
+    #[test]
+    fn process_loopback_uses_explicit_pcm_format_and_autoconvert_flags() {
+        let (wave_format, mix_format, stream_flags) = process_loopback_capture_format_and_flags();
+        let format_tag = wave_format.wFormatTag;
+        let sample_rate = wave_format.nSamplesPerSec;
+        let channels = wave_format.nChannels;
+        let bits_per_sample = wave_format.wBitsPerSample;
+        let block_align = wave_format.nBlockAlign;
+        let avg_bytes_per_sec = wave_format.nAvgBytesPerSec;
+        let extra_size = wave_format.cbSize;
+
+        assert_eq!(format_tag as u32, WAVE_FORMAT_PCM);
+        assert_eq!(sample_rate, 44_100);
+        assert_eq!(channels, 2);
+        assert_eq!(bits_per_sample, 16);
+        assert_eq!(block_align, 4);
+        assert_eq!(avg_bytes_per_sec, 176_400);
+        assert_eq!(extra_size, 0);
+
+        assert_eq!(mix_format.sample_rate, 44_100);
+        assert_eq!(mix_format.channels, 2);
+        assert_eq!(mix_format.block_align, 4);
+        assert!(matches!(mix_format.sample_kind, SampleKind::Int16));
+
+        assert_eq!(
+            stream_flags,
+            AUDCLNT_STREAMFLAGS_LOOPBACK
+                | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
+                | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY
+        );
+    }
+
+    #[test]
+    fn process_loopback_prefers_webview2_subtree_as_exclusion_target() {
+        let entries = vec![
+            process_entry(100, 10, "lingua-bridge-desktop.exe"),
+            process_entry(200, 100, "msedgewebview2.exe"),
+            process_entry(201, 200, "msedgewebview2.exe"),
+            process_entry(300, 100, "helper.exe"),
+        ];
+
+        let target = select_process_loopback_exclusion_target(100, &entries);
+
+        assert_eq!(target, 200);
+    }
+
+    #[test]
+    fn process_loopback_falls_back_to_current_process_without_webview2() {
+        let entries = vec![
+            process_entry(100, 10, "lingua-bridge-desktop.exe"),
+            process_entry(300, 100, "helper.exe"),
+        ];
+
+        let target = select_process_loopback_exclusion_target(100, &entries);
+
+        assert_eq!(target, 100);
+    }
+
+    fn process_entry(
+        process_id: u32,
+        parent_process_id: u32,
+        exe_file: &str,
+    ) -> ProcessSnapshotEntry {
+        ProcessSnapshotEntry {
+            process_id,
+            parent_process_id,
+            exe_file: exe_file.to_string(),
+        }
+    }
 }
 
 #[cfg(windows)]

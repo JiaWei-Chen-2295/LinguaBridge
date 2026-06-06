@@ -29,6 +29,7 @@ import { StatusPill } from "../components/StatusPill";
 import { glossaryEntries, historySessions, usageSummary } from "../data/mockData";
 import { formatDurationRange, formatMinutes, formatPercent } from "../lib/format";
 import {
+  getAudioCaptureCapabilities,
   getAudioCaptureStatus,
   listenToAudioFrames,
   listAudioDevices,
@@ -47,12 +48,20 @@ import {
   type InterpretationAudioPlayerSnapshot
 } from "../services/interpretationAudioPlayer";
 import { RealtimeGatewayConnection } from "../services/realtimeGateway";
-import type { AudioCaptureStatus, AudioCommandError, AudioDevice } from "../types/audio";
+import type {
+  AudioCaptureCapabilities,
+  AudioCaptureMode,
+  AudioCaptureStatus,
+  AudioCommandError,
+  AudioDevice
+} from "../types/audio";
 import type { SubtitleSegmentEvent } from "../types/protocol";
+import type { InterpretationOptions } from "@lingua-bridge/protocol";
 
 type MainTab = "history" | "usage" | "glossary";
 type SessionMode = "idle" | "capturing" | "paused" | "error";
 type SetupStepState = "waiting" | "current" | "complete" | "active" | "error";
+type EchoAvoidance = InterpretationOptions["echoAvoidance"];
 
 const invitePattern = /^[A-Z0-9-]{6,32}$/;
 const EMPTY_INTERPRETATION_AUDIO_STATUS: InterpretationAudioPlayerSnapshot = {
@@ -70,6 +79,10 @@ export function MainWindow(): ReactElement {
   const [devices, setDevices] = useState<AudioDevice[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
   const [captureStatus, setCaptureStatus] = useState<AudioCaptureStatus | null>(null);
+  const [audioCapabilities, setAudioCapabilities] = useState<AudioCaptureCapabilities | null>(null);
+  const [echoRiskAccepted, setEchoRiskAccepted] = useState(false);
+  const [activeInterpretationPolicy, setActiveInterpretationPolicy] =
+    useState<InterpretationStartPolicy | null>(null);
   const [sessionMode, setSessionMode] = useState<SessionMode>("idle");
   const [feedback, setFeedback] = useState<string | null>(null);
   const [overlayVisible, setOverlayVisible] = useState(true);
@@ -83,7 +96,7 @@ export function MainWindow(): ReactElement {
   const interpretationAudioPlayerRef = useRef<InterpretationAudioPlayer | null>(null);
 
   const audioErrored = sessionMode === "error" || captureStatus?.state === "error";
-  const audioReady = !audioErrored;
+  const audioReady = !audioErrored && audioCapabilities !== null;
   const canStart =
     inviteActivated &&
     privacyAccepted &&
@@ -148,15 +161,20 @@ export function MainWindow(): ReactElement {
     audioErrored,
     sessionMode
   });
+  const previewInterpretationPolicy =
+    audioCapabilities === null
+      ? null
+      : chooseInterpretationStartPolicy(audioCapabilities, echoRiskAccepted);
 
   useEffect(() => {
     let cancelled = false;
 
     async function hydrateAudioState(): Promise<void> {
       try {
-        const [nextDevices, nextStatus] = await Promise.all([
+        const [nextDevices, nextStatus, nextCapabilities] = await Promise.all([
           listAudioDevices(),
-          getAudioCaptureStatus()
+          getAudioCaptureStatus(),
+          getAudioCaptureCapabilities()
         ]);
         const nextOverlayVisible = await isOverlayWindowVisible().catch(() => true);
 
@@ -166,6 +184,7 @@ export function MainWindow(): ReactElement {
 
         setDevices(nextDevices);
         setCaptureStatus(nextStatus);
+        setAudioCapabilities(nextCapabilities);
         setOverlayVisible(nextOverlayVisible);
         setSelectedDeviceId(getDefaultAudioDeviceId(nextDevices));
       } catch (error) {
@@ -226,11 +245,20 @@ export function MainWindow(): ReactElement {
     setInterpretationAudioStatus(EMPTY_INTERPRETATION_AUDIO_STATUS);
 
     try {
-      const interpretationAudioPlayer = getInterpretationAudioPlayer(
-        interpretationAudioPlayerRef
+      if (audioCapabilities === null) {
+        setFeedback("正在探测音频能力，请稍后再开始。");
+        return;
+      }
+
+      const interpretationPolicy = chooseInterpretationStartPolicy(
+        audioCapabilities,
+        echoRiskAccepted
       );
-      interpretationAudioPlayer.reset();
-      await interpretationAudioPlayer.resume();
+      const interpretationAudioPlayer = interpretationPolicy.outputAudio
+        ? getInterpretationAudioPlayer(interpretationAudioPlayerRef)
+        : null;
+      interpretationAudioPlayer?.reset();
+      await interpretationAudioPlayer?.resume();
 
       const connection = new RealtimeGatewayConnection({
         onSubtitle: (event) => {
@@ -239,6 +267,10 @@ export function MainWindow(): ReactElement {
           );
         },
         onInterpretationAudioDelta: (event) => {
+          if (interpretationAudioPlayer === null) {
+            return;
+          }
+
           void interpretationAudioPlayer.enqueue(event.payload)
             .then((snapshot) => {
               setInterpretationAudioStatus(snapshot);
@@ -254,7 +286,9 @@ export function MainWindow(): ReactElement {
             });
         },
         onInterpretationAudioCompleted: () => {
-          setInterpretationAudioStatus(interpretationAudioPlayer.snapshot());
+          if (interpretationAudioPlayer !== null) {
+            setInterpretationAudioStatus(interpretationAudioPlayer.snapshot());
+          }
         },
         onError: (event) => {
           setFeedback(event.payload.message);
@@ -268,10 +302,13 @@ export function MainWindow(): ReactElement {
         inviteCode,
         deviceId: selectedDeviceId,
         mode: "interpretation",
-        outputAudio: true,
-        echoAvoidance: "disabled"
+        outputAudio: interpretationPolicy.outputAudio,
+        echoAvoidance: interpretationPolicy.echoAvoidance,
+        echoRiskAccepted: interpretationPolicy.echoRiskAccepted,
+        windowsBuild: audioCapabilities.windowsBuild
       });
       activeSessionIdRef.current = started.sessionId;
+      setActiveInterpretationPolicy(interpretationPolicy);
 
       audioFrameUnlistenRef.current = await listenToAudioFrames((frame) => {
         if (!audioSendingEnabledRef.current) {
@@ -285,13 +322,14 @@ export function MainWindow(): ReactElement {
         deviceId: selectedDeviceId,
         sampleRateHz: 16_000,
         channels: 1,
-        frameDurationMs: 20
+        frameDurationMs: 20,
+        mode: interpretationPolicy.captureMode
       });
 
       audioSendingEnabledRef.current = true;
       setCaptureStatus(nextStatus);
       setSessionMode("capturing");
-      setFeedback(`中文同传已启动：Gateway session ${started.sessionId}`);
+      setFeedback(`中文同传已启动：${interpretationPolicy.message} · Gateway session ${started.sessionId}`);
     } catch (error) {
       await cleanupRealtimeSession("device_error");
       const commandError = toAudioCommandError(error);
@@ -338,11 +376,13 @@ export function MainWindow(): ReactElement {
 
   async function refreshDevices(): Promise<void> {
     try {
-      const [nextDevices, nextOverlayVisible] = await Promise.all([
+      const [nextDevices, nextCapabilities, nextOverlayVisible] = await Promise.all([
         listAudioDevices(),
+        getAudioCaptureCapabilities(),
         isOverlayWindowVisible().catch(() => overlayVisible)
       ]);
       setDevices(nextDevices);
+      setAudioCapabilities(nextCapabilities);
       setOverlayVisible(nextOverlayVisible);
       setSelectedDeviceId((currentDeviceId) =>
         nextDevices.some((device) => device.id === currentDeviceId)
@@ -397,6 +437,7 @@ export function MainWindow(): ReactElement {
     realtimeConnectionRef.current = null;
     activeSessionIdRef.current = null;
     interpretationAudioPlayerRef.current?.reset();
+    setActiveInterpretationPolicy(null);
     setInterpretationAudioStatus(EMPTY_INTERPRETATION_AUDIO_STATUS);
   }
 
@@ -516,20 +557,46 @@ export function MainWindow(): ReactElement {
                   <StatusPill
                     label={
                       sessionMode === "capturing"
-                        ? interpretationAudioStatus.playedChunks > 0
-                          ? "正在播放"
-                          : "等待译音"
-                        : "默认开启"
+                        ? activeInterpretationPolicy?.outputAudio === false
+                          ? "仅中文字幕"
+                          : interpretationAudioStatus.playedChunks > 0
+                            ? "正在播放"
+                            : "等待译音"
+                        : previewInterpretationPolicy?.outputAudio === true
+                          ? "可播放"
+                          : "安全降级"
                     }
-                    tone={sessionMode === "capturing" ? "active" : "idle"}
+                    tone={
+                      activeInterpretationPolicy?.echoRiskAccepted === true ||
+                      previewInterpretationPolicy?.echoRiskAccepted === true
+                        ? "warning"
+                        : sessionMode === "capturing"
+                          ? "active"
+                          : "idle"
+                    }
                   />
                   <span>
-                    {formatInterpretationAudioStatus(interpretationAudioStatus)}
+                    {sessionMode === "capturing" && activeInterpretationPolicy?.outputAudio !== false
+                      ? formatInterpretationAudioStatus(interpretationAudioStatus)
+                      : formatEchoAvoidanceStatus(
+                          activeInterpretationPolicy ?? previewInterpretationPolicy,
+                          audioCapabilities
+                        )}
                   </span>
                 </div>
                 <p className="muted-line">
-                  第一版使用本机 Web Audio 播放 Gateway 返回的中文译音，音轨随会话按 30 天策略保存。
+                  {formatEchoAvoidanceDetail(previewInterpretationPolicy, audioCapabilities)}
                 </p>
+                {previewInterpretationPolicy?.echoAvoidance !== "process_exclude" ? (
+                  <label className="risk-confirm-row">
+                    <input
+                      type="checkbox"
+                      checked={echoRiskAccepted}
+                      onChange={(event) => setEchoRiskAccepted(event.target.checked)}
+                    />
+                    <span>高级风险模式：允许播放译音并接受回灌、回声和额外用量风险</span>
+                  </label>
+                ) : null}
               </div>
 
               <div
@@ -571,7 +638,7 @@ export function MainWindow(): ReactElement {
                 <SlidersHorizontal size={18} aria-hidden="true" />
                 <div>
                   <strong>{sessionMode === "capturing" ? "真实链路运行中" : "准备连接 Gateway"}</strong>
-                  <span>{activeDeviceName} · 中文同传语音默认开启</span>
+                  <span>{activeDeviceName} · {formatEchoAvoidanceStatus(previewInterpretationPolicy, audioCapabilities)}</span>
                 </div>
               </div>
               <div className="transport-controls">
@@ -710,6 +777,99 @@ interface GuideSummary {
   detail: string;
   statusLabel: string;
   statusTone: "idle" | "active" | "warning" | "error";
+}
+
+interface InterpretationStartPolicy {
+  outputAudio: boolean;
+  echoAvoidance: EchoAvoidance;
+  echoRiskAccepted: boolean;
+  captureMode: AudioCaptureMode;
+  message: string;
+}
+
+function chooseInterpretationStartPolicy(
+  capabilities: AudioCaptureCapabilities,
+  echoRiskAccepted: boolean
+): InterpretationStartPolicy {
+  if (capabilities.processExcludeLoopback.supported) {
+    return {
+      outputAudio: true,
+      echoAvoidance: "process_exclude",
+      echoRiskAccepted: false,
+      captureMode: "processExcludeLoopback",
+      message: "已启用 process-exclude 回灌规避"
+    };
+  }
+
+  if (echoRiskAccepted) {
+    return {
+      outputAudio: true,
+      echoAvoidance: "disabled",
+      echoRiskAccepted: true,
+      captureMode: "endpointLoopback",
+      message: "高级风险模式已启用，Gateway 将记录 echoRiskAccepted"
+    };
+  }
+
+  return {
+    outputAudio: false,
+    echoAvoidance: "disabled",
+    echoRiskAccepted: false,
+    captureMode: "endpointLoopback",
+    message: "当前系统不支持 process-exclude，已降级为仅中文字幕"
+  };
+}
+
+function formatEchoAvoidanceStatus(
+  policy: InterpretationStartPolicy | null,
+  capabilities: AudioCaptureCapabilities | null
+): string {
+  if (capabilities === null || policy === null) {
+    return "正在探测回灌规避能力";
+  }
+
+  if (policy.echoAvoidance === "process_exclude") {
+    return `process-exclude 可用 · Windows build ${capabilities.windowsBuild ?? "unknown"}`;
+  }
+
+  if (policy.echoRiskAccepted) {
+    return "风险模式 · echoAvoidance=disabled";
+  }
+
+  return `仅中文字幕 · ${formatCapabilityReason(capabilities.processExcludeLoopback.reason)}`;
+}
+
+function formatEchoAvoidanceDetail(
+  policy: InterpretationStartPolicy | null,
+  capabilities: AudioCaptureCapabilities | null
+): string {
+  if (capabilities === null || policy === null) {
+    return "正在探测 Windows process-exclude loopback 能力。";
+  }
+
+  if (policy.echoAvoidance === "process_exclude") {
+    return "同传将使用 process-exclude loopback 捕获系统原声，排除 LinguaBridge 当前进程树播放的中文译音。";
+  }
+
+  if (policy.echoRiskAccepted) {
+    return "已显式接受风险：中文译音可能重新进入主链路，Gateway usage metadata 会记录 echoRiskAccepted=true。";
+  }
+
+  return "当前系统无法确认 process-exclude loopback，同传默认不播放中文译音，只保留中文字幕。";
+}
+
+function formatCapabilityReason(
+  reason: AudioCaptureCapabilities["processExcludeLoopback"]["reason"]
+): string {
+  if (reason === "activation_failed") {
+    return "process-exclude activation failed";
+  }
+
+  if (reason === "not_windows") {
+    return "not Windows";
+  }
+
+  return "unsupported Windows build";
 }
 
 function getGuideSummary({

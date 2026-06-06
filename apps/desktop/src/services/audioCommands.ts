@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type {
   AudioCaptureConfig,
+  AudioCaptureCapabilities,
   AudioFramePayload,
   AudioCaptureStatus,
   AudioCommandError,
@@ -16,7 +17,8 @@ const defaultAudioConfig: AudioCaptureConfig = {
   deviceId: null,
   sampleRateHz: 16_000,
   channels: 1,
-  frameDurationMs: 20
+  frameDurationMs: 20,
+  mode: "endpointLoopback"
 };
 
 export async function listAudioDevices(): Promise<AudioDevice[]> {
@@ -25,6 +27,10 @@ export async function listAudioDevices(): Promise<AudioDevice[]> {
 
 export async function getAudioCaptureStatus(): Promise<AudioCaptureStatus> {
   return invoke<AudioCaptureStatus>("get_audio_capture_status");
+}
+
+export async function getAudioCaptureCapabilities(): Promise<AudioCaptureCapabilities> {
+  return invoke<AudioCaptureCapabilities>("get_audio_capture_capabilities");
 }
 
 export async function startAudioCapture(

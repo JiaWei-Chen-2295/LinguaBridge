@@ -26,6 +26,8 @@ export interface StartRealtimeSessionInput {
   outputAudio?: boolean;
   interpretationVoice?: string;
   echoAvoidance?: InterpretationOptions["echoAvoidance"];
+  echoRiskAccepted?: boolean;
+  windowsBuild?: number | null;
 }
 
 export interface RealtimeGatewayHandlers {
@@ -201,6 +203,9 @@ function startMessage(
   if (input.deviceId !== null) {
     device.deviceId = input.deviceId;
   }
+  if (input.windowsBuild !== undefined && input.windowsBuild !== null) {
+    device.osVersion = `10.0.${input.windowsBuild}`;
+  }
 
   const payload: RealtimeSessionStartMessage["payload"] = {
     inviteCode: input.inviteCode,
@@ -226,6 +231,9 @@ function startMessage(
       outputAudio: input.outputAudio ?? true,
       echoAvoidance: input.echoAvoidance ?? "disabled"
     };
+    if (input.echoRiskAccepted !== undefined) {
+      interpretation.echoRiskAccepted = input.echoRiskAccepted;
+    }
     if (input.interpretationVoice !== undefined) {
       interpretation.voice = input.interpretationVoice;
     }

@@ -132,11 +132,16 @@ function parseInterpretationOptions(
 
   const outputAudio = value.outputAudio;
   const echoAvoidance = value.echoAvoidance;
+  const echoRiskAccepted = value.echoRiskAccepted;
   if (
     typeof outputAudio !== "boolean" ||
+    (echoRiskAccepted !== undefined && typeof echoRiskAccepted !== "boolean") ||
     (echoAvoidance !== "process_exclude" &&
       echoAvoidance !== "separate_device" &&
-      echoAvoidance !== "disabled")
+      echoAvoidance !== "disabled") ||
+    (outputAudio === true &&
+      echoAvoidance === "disabled" &&
+      echoRiskAccepted !== true)
   ) {
     return undefined;
   }
@@ -148,6 +153,9 @@ function parseInterpretationOptions(
   const voice = optionalString(value, "voice");
   if (voice !== undefined) {
     parsed.voice = voice;
+  }
+  if (echoRiskAccepted !== undefined) {
+    parsed.echoRiskAccepted = echoRiskAccepted;
   }
   return parsed;
 }

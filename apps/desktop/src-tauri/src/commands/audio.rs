@@ -1,7 +1,8 @@
 use tauri::{AppHandle, State};
 
 use crate::audio::{
-    AudioCaptureConfig, AudioCaptureError, AudioCaptureStatus, AudioDevice, AudioState,
+    AudioCaptureCapabilities, AudioCaptureConfig, AudioCaptureError, AudioCaptureStatus,
+    AudioDevice, AudioState,
 };
 
 #[tauri::command]
@@ -16,6 +17,11 @@ pub fn get_audio_capture_status(
     state: State<'_, AudioState>,
 ) -> Result<AudioCaptureStatus, AudioCaptureError> {
     state.status()
+}
+
+#[tauri::command]
+pub fn get_audio_capture_capabilities(state: State<'_, AudioState>) -> AudioCaptureCapabilities {
+    state.capabilities()
 }
 
 #[tauri::command]

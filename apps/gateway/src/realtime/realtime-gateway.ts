@@ -3,6 +3,7 @@ import { WebSocket, WebSocketServer, type RawData } from "ws";
 import type {
   GatewayErrorCode,
   GatewayErrorEvent,
+  InterpretationOptions,
   GatewayReadyEvent,
   InterpretationAudioCompletedEvent,
   InterpretationAudioDeltaEvent,
@@ -86,6 +87,7 @@ class RealtimeConnection {
   private messageQueue: Promise<void> = Promise.resolve();
   private modelSession: RealtimeModelSession | undefined;
   private sessionMode: RealtimeSessionMode = "subtitle";
+  private sessionDiagnostics: Record<string, string | number | boolean> | undefined;
   private providerErrorSent = false;
   private readonly pendingSubtitlePersistence = new Set<Promise<void>>();
 
@@ -213,9 +215,22 @@ class RealtimeConnection {
     this.userId = resolved.user.id;
     this.sessionId = session.id;
     this.sessionMode = message.payload.mode ?? "subtitle";
+    this.sessionDiagnostics = buildSessionDiagnostics(
+      this.sessionMode,
+      message.payload.interpretation
+    );
     await this.deps.artifactRecorder.startSession({
       userId: resolved.user.id,
       sessionId: session.id
+    });
+    this.recordUsageEvent({
+      userId: resolved.user.id,
+      sessionId: session.id,
+      eventType: "session_metadata",
+      amount: 1,
+      unit: "count",
+      model: "gateway",
+      metadata: this.sessionDiagnostics
     });
     const termEntries = await this.deps.store.listTermEntries(resolved.user.id);
 
@@ -320,6 +335,7 @@ class RealtimeConnection {
       unit: "milliseconds",
       model: this.getInputAudioUsageModel(),
       metadata: {
+        ...this.sessionDiagnostics,
         sequence: message.payload.sequence,
         sampleRate: message.payload.sampleRate,
         channels: message.payload.channels
@@ -469,6 +485,7 @@ class RealtimeConnection {
       unit: "milliseconds",
       model: event.payload.modelTrace.liveTranslateModel ?? event.payload.modelTrace.mtModel,
       metadata: {
+        ...this.sessionDiagnostics,
         sequence: event.payload.sequence,
         trackId: event.payload.trackId,
         sampleFormat: event.payload.sampleFormat,
@@ -483,6 +500,7 @@ class RealtimeConnection {
       unit: "bytes",
       model: "local-dev-object-store",
       metadata: {
+        ...this.sessionDiagnostics,
         trackId: event.payload.trackId
       }
     });
@@ -510,7 +528,10 @@ class RealtimeConnection {
       amount: event.amount,
       unit: event.unit,
       model: event.model,
-      metadata: event.metadata
+      metadata: {
+        ...this.sessionDiagnostics,
+        ...event.metadata
+      }
     });
   }
 
@@ -736,6 +757,27 @@ class RealtimeConnection {
       this.socket.send(JSON.stringify(event));
     }
   }
+}
+
+function buildSessionDiagnostics(
+  mode: RealtimeSessionMode,
+  interpretation: InterpretationOptions | undefined
+): Record<string, string | number | boolean> {
+  if (mode !== "interpretation") {
+    return {
+      mode,
+      outputAudio: false,
+      echoAvoidance: "disabled",
+      echoRiskAccepted: false
+    };
+  }
+
+  return {
+    mode,
+    outputAudio: interpretation?.outputAudio ?? false,
+    echoAvoidance: interpretation?.echoAvoidance ?? "disabled",
+    echoRiskAccepted: interpretation?.echoRiskAccepted === true
+  };
 }
 
 function rawDataToUtf8(data: RawData): string {

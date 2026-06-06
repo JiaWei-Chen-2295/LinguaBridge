@@ -16,7 +16,33 @@ export interface AudioCaptureConfig {
   sampleRateHz: number;
   channels: number;
   frameDurationMs: number;
+  mode: AudioCaptureMode;
 }
+
+export type AudioCaptureMode = "endpointLoopback" | "processExcludeLoopback";
+
+export interface AudioCaptureCapabilities {
+  endpointLoopback: AudioLoopbackCapability;
+  processExcludeLoopback: ProcessExcludeLoopbackCapability;
+  windowsBuild: number | null;
+}
+
+export interface AudioLoopbackCapability {
+  supported: boolean;
+  reason: AudioCaptureCapabilityReason | null;
+}
+
+export interface ProcessExcludeLoopbackCapability {
+  supported: boolean;
+  reason: AudioCaptureCapabilityReason | null;
+  minimumBuild: number;
+  currentBuild: number | null;
+}
+
+export type AudioCaptureCapabilityReason =
+  | "unsupported_os"
+  | "activation_failed"
+  | "not_windows";
 
 export type AudioCaptureStatusKind = "idle" | "starting" | "capturing" | "stopping" | "error";
 
