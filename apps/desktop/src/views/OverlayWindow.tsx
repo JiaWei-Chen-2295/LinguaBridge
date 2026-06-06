@@ -19,6 +19,7 @@ import {
   listenToOverlaySubtitles,
   readCachedOverlaySubtitles
 } from "../services/overlaySubtitle";
+import { getOverlayWindowFeedback, hideOverlayWindow } from "../services/overlayWindow";
 import type { OverlayLineMode, SubtitleSegmentEvent } from "../types/protocol";
 
 export function OverlayWindow(): ReactElement {
@@ -58,7 +59,7 @@ export function OverlayWindow(): ReactElement {
         unlistenSubtitles = unlisten;
       } catch (error) {
         if (!cancelled) {
-          setSyncFeedback(getOverlayRuntimeFeedback(error));
+          setSyncFeedback(getOverlayWindowFeedback(error));
         }
       }
     }
@@ -87,15 +88,15 @@ export function OverlayWindow(): ReactElement {
     try {
       await getCurrentWindow().startDragging();
     } catch (error) {
-      setSyncFeedback(getOverlayRuntimeFeedback(error));
+      setSyncFeedback(getOverlayWindowFeedback(error));
     }
   }
 
   async function handleHideOverlay(): Promise<void> {
     try {
-      await getCurrentWindow().hide();
+      await hideOverlayWindow();
     } catch (error) {
-      setSyncFeedback(getOverlayRuntimeFeedback(error));
+      setSyncFeedback(getOverlayWindowFeedback(error));
     }
   }
 
@@ -194,18 +195,3 @@ export function OverlayWindow(): ReactElement {
   );
 }
 
-function getOverlayRuntimeFeedback(error: unknown): string {
-  if (error instanceof Error) {
-    if (
-      error.message.includes("reading 'invoke'") ||
-      error.message.includes("transformCallback") ||
-      error.message.includes("window.__TAURI__")
-    ) {
-      return "当前是浏览器预览环境，浮窗控制需要在 Tauri 桌面端中运行。";
-    }
-
-    return error.message;
-  }
-
-  return "浮窗控制失败，请重新打开悬浮窗。";
-}

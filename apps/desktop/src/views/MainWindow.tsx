@@ -40,8 +40,10 @@ import {
   toAudioCommandError
 } from "../services/audioCommands";
 import {
+  getOverlayWindowFeedback,
   hideOverlayWindow,
   isOverlayWindowVisible,
+  listenToOverlayVisibility,
   showOverlayWindow
 } from "../services/overlayWindow";
 import { publishOverlaySubtitles } from "../services/overlaySubtitle";
@@ -211,6 +213,35 @@ export function MainWindow(): ReactElement {
       void interpretationAudioPlayerRef.current?.close().catch(() => undefined);
       interpretationAudioPlayerRef.current = null;
       void stopAudioCapture().catch(() => undefined);
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlistenVisibility: (() => void) | null = null;
+
+    async function subscribeToOverlayVisibility(): Promise<void> {
+      try {
+        const unlisten = await listenToOverlayVisibility((payload) => {
+          setOverlayVisible(payload.visible);
+        });
+
+        if (cancelled) {
+          unlisten();
+          return;
+        }
+
+        unlistenVisibility = unlisten;
+      } catch {
+        // Overlay visibility sync is best-effort; toggle still queries the real window state.
+      }
+    }
+
+    void subscribeToOverlayVisibility();
+
+    return () => {
+      cancelled = true;
+      unlistenVisibility?.();
     };
   }, []);
 
@@ -402,7 +433,9 @@ export function MainWindow(): ReactElement {
 
   async function toggleOverlayWindow(): Promise<void> {
     try {
-      if (overlayVisible) {
+      const currentlyVisible = await isOverlayWindowVisible();
+
+      if (currentlyVisible) {
         await hideOverlayWindow();
         setOverlayVisible(false);
         setFeedback("悬浮字幕窗已隐藏，可在主界面重新打开。");
@@ -413,12 +446,7 @@ export function MainWindow(): ReactElement {
       setOverlayVisible(true);
       setFeedback("悬浮字幕窗已显示。");
     } catch (error) {
-      const commandError = toAudioCommandError(error);
-      setFeedback(
-        error instanceof Error
-          ? getRuntimeFeedbackMessage(error.message)
-          : getAudioFeedbackMessage(commandError)
-      );
+      setFeedback(getOverlayWindowFeedback(error));
     }
   }
 
