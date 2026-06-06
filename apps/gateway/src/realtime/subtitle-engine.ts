@@ -11,7 +11,8 @@ import {
   applyTermPolicy,
   buildTermPrompt,
   findTermMatches,
-  mergeTermEntries
+  mergeTermEntries,
+  normalizeTechnicalSourceText
 } from "./terms";
 
 export type RealtimeAudioFramePayload = RealtimeAudioFrameMessage["payload"];
@@ -214,12 +215,16 @@ export class SubtitleEngine {
       return;
     }
 
-    const sourceText = event.sourceText.trim();
+    const sourceText = normalizeTechnicalSourceText(
+      event.sourceText.trim(),
+      this.termEntries
+    );
     if (sourceText.length === 0 || !shouldTranslateDraft(sourceText, event)) {
       return;
     }
+    const normalizedEvent: AsrTextEvent = { ...event, sourceText };
 
-    const segment = this.getOrCreateSegment(event);
+    const segment = this.getOrCreateSegment(normalizedEvent);
     if (
       segment.status !== "draft" ||
       segment.sourceText === sourceText ||
@@ -236,7 +241,12 @@ export class SubtitleEngine {
     });
     this.recordTranslationUsage(result, sourceText, "draft");
 
-    await this.updateSegmentFromTranslation(event, result.text, "draft", result.usage);
+    await this.updateSegmentFromTranslation(
+      normalizedEvent,
+      result.text,
+      "draft",
+      result.usage
+    );
   }
 
   private async handleFinal(event: AsrTextEvent): Promise<void> {
@@ -244,10 +254,14 @@ export class SubtitleEngine {
       return;
     }
 
-    const sourceText = event.sourceText.trim();
+    const sourceText = normalizeTechnicalSourceText(
+      event.sourceText.trim(),
+      this.termEntries
+    );
     if (sourceText.length === 0) {
       return;
     }
+    const normalizedEvent: AsrTextEvent = { ...event, sourceText };
 
     const result = await this.input.textProvider.translate({
       sourceText,
@@ -257,7 +271,12 @@ export class SubtitleEngine {
     });
     this.recordTranslationUsage(result, sourceText, "final");
 
-    await this.updateSegmentFromTranslation(event, result.text, "final", result.usage);
+    await this.updateSegmentFromTranslation(
+      normalizedEvent,
+      result.text,
+      "final",
+      result.usage
+    );
   }
 
   private async updateSegmentFromTranslation(
