@@ -58,6 +58,7 @@ export class LiveTranslateTextBuffer {
 
     const itemId = this.resolveItemId(update.itemId);
     const segment = this.segmentFor(itemId, update.receivedAtMs);
+    const wasSegmentFinal = segment.sourceCompleted && segment.targetCompleted;
     const sideCompleted =
       update.kind === "source"
         ? segment.sourceCompleted
@@ -93,7 +94,7 @@ export class LiveTranslateTextBuffer {
       segment.lastUpdatedAtMs = update.receivedAtMs;
     }
 
-    if (changed || update.itemId === undefined) {
+    if (!wasSegmentFinal && (changed || update.itemId === undefined)) {
       this.lastItemId = itemId;
     }
 

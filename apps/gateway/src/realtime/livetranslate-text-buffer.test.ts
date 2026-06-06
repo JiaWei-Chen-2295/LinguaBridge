@@ -472,6 +472,53 @@ test("LiveTranslateTextBuffer keeps active item after duplicate completed event 
   assert.equal(updated?.targetText, "第二句。");
 });
 
+test("LiveTranslateTextBuffer keeps active item after late final correction", () => {
+  const buffer = new LiveTranslateTextBuffer();
+
+  buffer.apply({
+    itemId: "item_1",
+    kind: "source",
+    phase: "completed",
+    text: "A",
+    receivedAtMs: 100
+  });
+  buffer.apply({
+    itemId: "item_1",
+    kind: "target",
+    phase: "completed",
+    text: "甲",
+    receivedAtMs: 200
+  });
+  buffer.apply({
+    itemId: "item_2",
+    kind: "source",
+    phase: "draft",
+    text: "B",
+    receivedAtMs: 300
+  });
+  const correctedFinal = buffer.apply({
+    itemId: "item_1",
+    kind: "target",
+    phase: "completed",
+    text: "甲修正",
+    receivedAtMs: 400
+  });
+  const updated = buffer.apply({
+    kind: "target",
+    phase: "draft",
+    text: "第二句。",
+    receivedAtMs: 500
+  });
+
+  assert.equal(correctedFinal?.itemId, "item_1");
+  assert.equal(correctedFinal?.targetText, "甲修正");
+  assert.equal(correctedFinal?.status, "final");
+  assert.equal(correctedFinal?.changed, true);
+  assert.equal(updated?.itemId, "item_2");
+  assert.equal(updated?.targetText, "第二句。");
+  assert.equal(updated?.status, "draft");
+});
+
 test("LiveTranslateTextBuffer keeps missing item_id events on the active item", () => {
   const buffer = new LiveTranslateTextBuffer();
 
