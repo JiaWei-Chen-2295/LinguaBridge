@@ -19,6 +19,11 @@ import type {
   RealtimeModelSessionCallbacks,
   RealtimeModelSessionContext
 } from "./model-session";
+import {
+  LiveTranslateTextBuffer,
+  type LiveTranslateTextKind,
+  type LiveTranslateTextPhase
+} from "./livetranslate-text-buffer";
 
 interface AlibabaCloudLiveTranslateSessionInput {
   config: ModelConfig;
@@ -72,6 +77,7 @@ export class AlibabaCloudLiveTranslateSession {
   private audioSequence = 0;
   private audioDurationMs = 0;
   private lastItemId: string | undefined;
+  private readonly textBuffer = new LiveTranslateTextBuffer();
   private readonly segments = new Map<string, SegmentState>();
   private sessionUpdatedResolver: (() => void) | undefined;
   private finishedResolver: (() => void) | undefined;
@@ -239,12 +245,12 @@ export class AlibabaCloudLiveTranslateSession {
     }
 
     if (event.type === "conversation.item.input_audio_transcription.text") {
-      await this.handleSourceText(event, false);
+      await this.handleTextEvent(event, "source", "draft");
       return;
     }
 
     if (event.type === "conversation.item.input_audio_transcription.completed") {
-      await this.handleSourceText(event, true);
+      await this.handleTextEvent(event, "source", "completed");
       return;
     }
 
@@ -254,7 +260,14 @@ export class AlibabaCloudLiveTranslateSession {
       event.type === "response.audio_transcript.text" ||
       event.type === "response.audio_transcript.done"
     ) {
-      await this.handleTargetText(event);
+      await this.handleTextEvent(
+        event,
+        "target",
+        event.type === "response.text.done" ||
+          event.type === "response.audio_transcript.done"
+          ? "completed"
+          : "draft"
+      );
       return;
     }
 
@@ -277,34 +290,54 @@ export class AlibabaCloudLiveTranslateSession {
     }
   }
 
-  private async handleSourceText(
+  private async handleTextEvent(
     event: LiveTranslateGenericEvent,
-    finalized: boolean
+    kind: LiveTranslateTextKind,
+    phase: LiveTranslateTextPhase
   ): Promise<void> {
-    const sourceText = normalizeTechnicalSourceText(
-      readSourceText(event),
-      this.termEntries
+    const text =
+      kind === "source"
+        ? normalizeTechnicalSourceText(readSourceText(event), this.termEntries)
+        : readTargetText(event);
+    const itemId =
+      typeof event.item_id === "string" && event.item_id.length > 0
+        ? event.item_id
+        : undefined;
+    const buffered = this.textBuffer.apply({
+      ...(itemId === undefined ? {} : { itemId }),
+      kind,
+      phase,
+      text,
+      receivedAtMs: Date.now()
+    });
+
+    this.input.log.debug(
+      {
+        eventType: event.type,
+        itemId,
+        kind,
+        phase,
+        textLength: text.length,
+        status: buffered?.status,
+        changed: buffered?.changed ?? false,
+        shortTextIgnored: buffered?.shortTextIgnored ?? false
+      },
+      "Alibaba Cloud LiveTranslate text buffered"
     );
-    if (sourceText.length === 0) {
+
+    if (buffered === undefined || !buffered.changed) {
       return;
     }
 
-    const segment = this.segmentFor(event);
-    segment.sourceText = sourceText;
-    segment.endAtMs = Math.max(segment.endAtMs, this.audioCursorMs);
-    segment.finalized = finalized;
-    await this.emitSegment(segment);
-  }
-
-  private async handleTargetText(event: LiveTranslateGenericEvent): Promise<void> {
-    const targetText = readTargetText(event);
-    if (targetText.length === 0) {
-      return;
+    if (buffered.status !== "final") {
+      this.lastItemId = buffered.itemId;
     }
 
-    const segment = this.segmentFor(event);
-    segment.targetText = targetText;
+    const segment = this.segmentForItemId(buffered.itemId);
+    segment.sourceText = buffered.sourceText;
+    segment.targetText = buffered.targetText;
     segment.endAtMs = Math.max(segment.endAtMs, this.audioCursorMs);
+    segment.finalized = buffered.status === "final";
     await this.emitSegment(segment);
   }
 
@@ -376,15 +409,6 @@ export class AlibabaCloudLiveTranslateSession {
     };
 
     await this.input.callbacks.onSubtitleEvent(event);
-  }
-
-  private segmentFor(event: LiveTranslateGenericEvent): SegmentState {
-    const itemId =
-      typeof event.item_id === "string" && event.item_id.length > 0
-        ? event.item_id
-        : this.lastItemId ?? createEventId("item");
-    this.lastItemId = itemId;
-    return this.segmentForItemId(itemId);
   }
 
   private segmentForItemId(itemId: string): SegmentState {
