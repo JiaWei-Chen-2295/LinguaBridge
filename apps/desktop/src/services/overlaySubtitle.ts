@@ -1,6 +1,7 @@
 import { emitTo, listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type { SubtitleSegmentEvent } from "../types/protocol";
+import { selectOverlaySegments } from "./overlaySubtitleSelection";
 
 export const OVERLAY_SUBTITLE_SYNC_EVENT = "overlay-subtitle-sync";
 const OVERLAY_WINDOW_LABEL = "subtitle-overlay";
@@ -13,7 +14,7 @@ export interface OverlaySubtitleSyncPayload {
 export async function publishOverlaySubtitles(
   segments: SubtitleSegmentEvent[]
 ): Promise<void> {
-  const visibleSegments = segments.slice(-2);
+  const visibleSegments = selectOverlaySegments(segments);
   writeCachedOverlaySubtitles(visibleSegments);
   await emitTo(OVERLAY_WINDOW_LABEL, OVERLAY_SUBTITLE_SYNC_EVENT, {
     segments: visibleSegments
@@ -40,7 +41,7 @@ export function readCachedOverlaySubtitles(): SubtitleSegmentEvent[] {
       return [];
     }
 
-    return parsed.filter(isSubtitleSegmentEvent).slice(-2);
+    return selectOverlaySegments(parsed.filter(isSubtitleSegmentEvent));
   } catch {
     return [];
   }
