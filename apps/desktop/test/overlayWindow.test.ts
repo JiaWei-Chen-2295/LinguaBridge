@@ -1,18 +1,18 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { toOverlayWindowFeedbackMessage } from "../src/services/overlayWindow";
+import { getOverlayWindowFeedback } from "../src/services/overlayWindow";
 
-test("toOverlayWindowFeedbackMessage does not describe window failures as audio command failures", () => {
-  const message = toOverlayWindowFeedbackMessage("not allowed");
+test("getOverlayWindowFeedback does not describe window failures as audio command failures", () => {
+  const message = getOverlayWindowFeedback("not allowed");
 
   assert.equal(message.includes("Audio command failed"), false);
-  assert.equal(message, "悬浮窗控制失败：not allowed");
+  assert.equal(message, "浮窗控制权限未配置，请重启桌面端后重试。");
 });
 
-test("toOverlayWindowFeedbackMessage explains browser preview limitations", () => {
+test("getOverlayWindowFeedback explains browser preview limitations", () => {
   assert.equal(
-    toOverlayWindowFeedbackMessage(
+    getOverlayWindowFeedback(
       "Cannot read properties of undefined (reading 'invoke')"
     ),
     "当前是浏览器预览环境，浮窗控制需要在 Tauri 桌面端中运行。"

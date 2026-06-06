@@ -20,7 +20,7 @@ import {
   readCachedOverlaySubtitles
 } from "../services/overlaySubtitle";
 import { selectOverlaySegments } from "../services/overlaySubtitleSelection";
-import { toOverlayWindowFeedbackMessage } from "../services/overlayWindow";
+import { getOverlayWindowFeedback, hideOverlayWindow } from "../services/overlayWindow";
 import type { OverlayLineMode, SubtitleSegmentEvent } from "../types/protocol";
 
 export function OverlayWindow(): ReactElement {
@@ -61,7 +61,7 @@ export function OverlayWindow(): ReactElement {
         unlistenSubtitles = unlisten;
       } catch (error) {
         if (!cancelled) {
-          setSyncFeedback(toOverlayWindowFeedbackMessage(error));
+          setSyncFeedback(getOverlayWindowFeedback(error));
         }
       }
     }
@@ -97,15 +97,15 @@ export function OverlayWindow(): ReactElement {
     try {
       await getCurrentWindow().startDragging();
     } catch (error) {
-      setSyncFeedback(toOverlayWindowFeedbackMessage(error));
+      setSyncFeedback(getOverlayWindowFeedback(error));
     }
   }
 
   async function handleHideOverlay(): Promise<void> {
     try {
-      await getCurrentWindow().hide();
+      await hideOverlayWindow();
     } catch (error) {
-      setSyncFeedback(toOverlayWindowFeedbackMessage(error));
+      setSyncFeedback(getOverlayWindowFeedback(error));
     }
   }
 
