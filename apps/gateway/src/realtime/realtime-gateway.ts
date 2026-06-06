@@ -82,6 +82,7 @@ class RealtimeConnection {
   private messageQueue: Promise<void> = Promise.resolve();
   private modelSession: RealtimeModelSession | undefined;
   private providerErrorSent = false;
+  private readonly pendingSubtitlePersistence = new Set<Promise<void>>();
 
   public constructor(
     private readonly socket: WebSocket,
@@ -397,7 +398,7 @@ class RealtimeConnection {
       "subtitle segment emitted"
     );
 
-    void this.persistSubtitleEvent(event).catch((error: unknown) => {
+    const persistence = this.persistSubtitleEvent(event).catch((error: unknown) => {
       this.app.log.warn(
         {
           error,
@@ -408,6 +409,10 @@ class RealtimeConnection {
         },
         "subtitle event persistence failed"
       );
+    });
+    this.pendingSubtitlePersistence.add(persistence);
+    void persistence.finally(() => {
+      this.pendingSubtitlePersistence.delete(persistence);
     });
   }
 
@@ -457,6 +462,7 @@ class RealtimeConnection {
       await activeModelSession?.stop().catch((error: unknown) => {
         this.app.log.warn({ error }, "realtime model session stop failed");
       });
+      await this.waitForSubtitlePersistence();
       await this.finalizeArtifacts(result);
       return result;
     }
@@ -465,6 +471,7 @@ class RealtimeConnection {
       await activeModelSession.stop().catch((error: unknown) => {
         this.app.log.warn({ error }, "realtime model session stop failed");
       });
+      await this.waitForSubtitlePersistence();
     }
 
     return undefined;
@@ -567,6 +574,12 @@ class RealtimeConnection {
   ): Promise<void> {
     await this.deps.store.recordSubtitleEvent(event);
     await this.persistTranscriptSnapshot(event.payload.sessionId);
+  }
+
+  private async waitForSubtitlePersistence(): Promise<void> {
+    while (this.pendingSubtitlePersistence.size > 0) {
+      await Promise.allSettled(Array.from(this.pendingSubtitlePersistence));
+    }
   }
 
   private sendReady(): void {
