@@ -1,5 +1,9 @@
 import type {
+  InterpretationAudioCompletedEvent,
+  InterpretationAudioDeltaEvent,
+  InterpretationOptions,
   RealtimeAudioFrameMessage,
+  RealtimeSessionMode,
   SubtitleSegmentUpdatedEvent,
   TermEntry
 } from "@lingua-bridge/protocol";
@@ -9,6 +13,7 @@ import {
   AlibabaCloudRealtimeAsrProvider,
   AlibabaCloudSubtitleTextProvider
 } from "./alibaba-cloud-model-session";
+import { AlibabaCloudLiveTranslateSession } from "./alibaba-cloud-livetranslate-session";
 import {
   MockRealtimeAsrProvider,
   MockSubtitleTextProvider
@@ -34,6 +39,8 @@ export interface RealtimeModelSessionContext {
 
 export interface RealtimeModelSessionCallbacks {
   onSubtitleEvent(event: SubtitleSegmentUpdatedEvent): Promise<void>;
+  onInterpretationAudioDelta?(event: InterpretationAudioDeltaEvent): Promise<void>;
+  onInterpretationAudioCompleted?(event: InterpretationAudioCompletedEvent): Promise<void>;
   onUsageEvent(event: RealtimeModelUsageEvent): void;
   onProviderError(error: RealtimeModelProviderError): void;
 }
@@ -47,6 +54,8 @@ export interface RealtimeModelProviderError {
 export interface CreateRealtimeModelSessionInput {
   config: GatewayConfig;
   context: RealtimeModelSessionContext;
+  mode: RealtimeSessionMode;
+  interpretation?: InterpretationOptions;
   callbacks: RealtimeModelSessionCallbacks;
   termEntries: TermEntry[];
   log: FastifyBaseLogger;
@@ -55,6 +64,24 @@ export interface CreateRealtimeModelSessionInput {
 export function createRealtimeModelSession(
   input: CreateRealtimeModelSessionInput
 ): RealtimeModelSession {
+  if (input.mode === "interpretation" && input.config.model.provider === "alibaba-cloud") {
+    const liveTranslateInput = {
+      config: input.config.model,
+      context: input.context,
+      callbacks: input.callbacks,
+      termEntries: input.termEntries,
+      log: input.log
+    };
+    return new AlibabaCloudLiveTranslateSession(
+      input.interpretation === undefined
+        ? liveTranslateInput
+        : {
+            ...liveTranslateInput,
+            interpretation: input.interpretation
+          }
+    );
+  }
+
   if (input.config.model.provider === "alibaba-cloud") {
     return new SubtitleEngine({
       context: input.context,

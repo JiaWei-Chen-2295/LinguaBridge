@@ -108,6 +108,8 @@ CREATE TABLE IF NOT EXISTS usage_events (
       'mt_output_tokens',
       'revision_tokens',
       'oss_audio_storage',
+      'interpretation_audio_duration',
+      'interpretation_audio_storage',
       'session_realtime_duration',
       'session_interruption'
     )

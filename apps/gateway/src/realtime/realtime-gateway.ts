@@ -4,6 +4,9 @@ import type {
   GatewayErrorCode,
   GatewayErrorEvent,
   GatewayReadyEvent,
+  InterpretationAudioCompletedEvent,
+  InterpretationAudioDeltaEvent,
+  RealtimeSessionMode,
   RealtimeAudioFrameMessage,
   RealtimeClientMessage,
   RealtimeServerMessage,
@@ -26,6 +29,7 @@ import {
   getRealtimeModelProviderIssue,
   type RealtimeModelProviderError,
   type RealtimeModelSession,
+  type RealtimeModelSessionCallbacks,
   type RealtimeModelUsageEvent
 } from "./model-session";
 import { parseRealtimeClientMessage } from "./ws-messages";
@@ -81,7 +85,9 @@ class RealtimeConnection {
   private stoppedByClient = false;
   private messageQueue: Promise<void> = Promise.resolve();
   private modelSession: RealtimeModelSession | undefined;
+  private sessionMode: RealtimeSessionMode = "subtitle";
   private providerErrorSent = false;
+  private readonly pendingSubtitlePersistence = new Set<Promise<void>>();
 
   public constructor(
     private readonly socket: WebSocket,
@@ -206,27 +212,42 @@ class RealtimeConnection {
     });
     this.userId = resolved.user.id;
     this.sessionId = session.id;
+    this.sessionMode = message.payload.mode ?? "subtitle";
     await this.deps.artifactRecorder.startSession({
       userId: resolved.user.id,
       sessionId: session.id
     });
     const termEntries = await this.deps.store.listTermEntries(resolved.user.id);
 
-    this.modelSession = createRealtimeModelSession({
+    const modelCallbacks: RealtimeModelSessionCallbacks = {
+      onSubtitleEvent: (event) => this.handleSubtitleEvent(event),
+      onInterpretationAudioDelta: (event) =>
+        this.handleInterpretationAudioDelta(event),
+      onInterpretationAudioCompleted: (event) =>
+        this.handleInterpretationAudioCompleted(event),
+      onUsageEvent: (event) => this.handleModelUsageEvent(event),
+      onProviderError: (error) => this.sendModelProviderError(error)
+    };
+    const modelSessionInput = {
       config: this.deps.config,
+      mode: this.sessionMode,
       context: {
         sessionId: session.id,
         sourceLang: session.sourceLang,
         targetLang: session.targetLang
       },
-      callbacks: {
-        onSubtitleEvent: (event) => this.handleSubtitleEvent(event),
-        onUsageEvent: (event) => this.handleModelUsageEvent(event),
-        onProviderError: (error) => this.sendModelProviderError(error)
-      },
+      callbacks: modelCallbacks,
       termEntries,
       log: this.app.log
-    });
+    };
+    this.modelSession = createRealtimeModelSession(
+      message.payload.interpretation === undefined
+        ? modelSessionInput
+        : {
+            ...modelSessionInput,
+            interpretation: message.payload.interpretation
+          }
+    );
 
     try {
       await this.modelSession.start();
@@ -297,7 +318,7 @@ class RealtimeConnection {
       eventType: "asr_audio_duration",
       amount: message.payload.durationMs,
       unit: "milliseconds",
-      model: this.getAsrUsageModel(),
+      model: this.getInputAudioUsageModel(),
       metadata: {
         sequence: message.payload.sequence,
         sampleRate: message.payload.sampleRate,
@@ -397,7 +418,7 @@ class RealtimeConnection {
       "subtitle segment emitted"
     );
 
-    void this.persistSubtitleEvent(event).catch((error: unknown) => {
+    const persistence = this.persistSubtitleEvent(event).catch((error: unknown) => {
       this.app.log.warn(
         {
           error,
@@ -409,6 +430,72 @@ class RealtimeConnection {
         "subtitle event persistence failed"
       );
     });
+    this.pendingSubtitlePersistence.add(persistence);
+    void persistence.finally(() => {
+      this.pendingSubtitlePersistence.delete(persistence);
+    });
+  }
+
+  private async handleInterpretationAudioDelta(
+    event: InterpretationAudioDeltaEvent
+  ): Promise<void> {
+    const sessionId = this.sessionId;
+    const userId = this.userId;
+    if (
+      this.closed ||
+      sessionId === undefined ||
+      userId === undefined ||
+      sessionId !== event.payload.sessionId
+    ) {
+      return;
+    }
+
+    this.sendEvent(event);
+    const storedFrame = await this.deps.artifactRecorder.appendInterpretationAudioFrame({
+      sessionId: event.payload.sessionId,
+      pcmBase64: event.payload.pcmBase64,
+      durationMs: event.payload.durationMs,
+      sampleFormat: event.payload.sampleFormat,
+      sampleRate: event.payload.sampleRate
+    });
+    const storedBytes =
+      storedFrame?.sizeBytes ?? estimateBase64DecodedBytes(event.payload.pcmBase64);
+
+    this.recordUsageEvent({
+      userId,
+      sessionId,
+      eventType: "interpretation_audio_duration",
+      amount: event.payload.durationMs,
+      unit: "milliseconds",
+      model: event.payload.modelTrace.liveTranslateModel ?? event.payload.modelTrace.mtModel,
+      metadata: {
+        sequence: event.payload.sequence,
+        trackId: event.payload.trackId,
+        sampleFormat: event.payload.sampleFormat,
+        sampleRate: event.payload.sampleRate
+      }
+    });
+    this.recordUsageEvent({
+      userId,
+      sessionId,
+      eventType: "interpretation_audio_storage",
+      amount: storedBytes,
+      unit: "bytes",
+      model: "local-dev-object-store",
+      metadata: {
+        trackId: event.payload.trackId
+      }
+    });
+  }
+
+  private async handleInterpretationAudioCompleted(
+    event: InterpretationAudioCompletedEvent
+  ): Promise<void> {
+    if (this.closed || this.sessionId !== event.payload.sessionId) {
+      return;
+    }
+
+    this.sendEvent(event);
   }
 
   private handleModelUsageEvent(event: RealtimeModelUsageEvent): void {
@@ -457,6 +544,7 @@ class RealtimeConnection {
       await activeModelSession?.stop().catch((error: unknown) => {
         this.app.log.warn({ error }, "realtime model session stop failed");
       });
+      await this.waitForSubtitlePersistence();
       await this.finalizeArtifacts(result);
       return result;
     }
@@ -465,6 +553,7 @@ class RealtimeConnection {
       await activeModelSession.stop().catch((error: unknown) => {
         this.app.log.warn({ error }, "realtime model session stop failed");
       });
+      await this.waitForSubtitlePersistence();
     }
 
     return undefined;
@@ -498,7 +587,11 @@ class RealtimeConnection {
     );
   }
 
-  private getAsrUsageModel(): string {
+  private getInputAudioUsageModel(): string {
+    if (this.sessionMode === "interpretation") {
+      return this.deps.config.model.liveTranslateSpike.model;
+    }
+
     if (this.deps.config.model.provider === "alibaba-cloud") {
       return this.deps.config.model.alibabaCloud.asrModel;
     }
@@ -535,6 +628,23 @@ class RealtimeConnection {
     const finalized = await this.deps.artifactRecorder.finalizeSession(
       initialSnapshot
     );
+    if (finalized.audioObjects.length > 0) {
+      for (const audioObject of finalized.audioObjects) {
+        await this.deps.store.recordSessionAudioObject({
+          sessionId: result.session.id,
+          objectKey: audioObject.objectKey,
+          format: audioObject.format,
+          durationMs: audioObject.durationMs,
+          sizeBytes: audioObject.sizeBytes
+        });
+      }
+      const snapshot = await this.deps.store.getSessionSnapshot(result.session.id);
+      if (snapshot !== undefined) {
+        await this.deps.artifactRecorder.persistSessionDocuments(snapshot);
+      }
+      return;
+    }
+
     if (finalized.audioObject !== undefined) {
       await this.deps.store.recordSessionAudioObject({
         sessionId: result.session.id,
@@ -567,6 +677,12 @@ class RealtimeConnection {
   ): Promise<void> {
     await this.deps.store.recordSubtitleEvent(event);
     await this.persistTranscriptSnapshot(event.payload.sessionId);
+  }
+
+  private async waitForSubtitlePersistence(): Promise<void> {
+    while (this.pendingSubtitlePersistence.size > 0) {
+      await Promise.allSettled(Array.from(this.pendingSubtitlePersistence));
+    }
   }
 
   private sendReady(): void {

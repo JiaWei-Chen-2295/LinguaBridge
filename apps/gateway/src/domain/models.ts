@@ -14,6 +14,8 @@ export type UsageEventType =
   | "mt_output_tokens"
   | "revision_tokens"
   | "oss_audio_storage"
+  | "interpretation_audio_duration"
+  | "interpretation_audio_storage"
   | "session_realtime_duration"
   | "session_interruption";
 
@@ -131,6 +133,7 @@ export interface UsageSummary {
   mtInputTokens: number;
   mtOutputTokens: number;
   revisionTokens: number;
+  interpretationAudioMs: number;
   interruptions: number;
   remainingMinutes: number;
 }

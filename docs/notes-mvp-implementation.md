@@ -19,10 +19,12 @@
 ## 2. 明确假设
 
 - 当前版本默认使用 mock model provider；设置 `MODEL_PROVIDER=alibaba-cloud` 后，Gateway 会接阿里云实时 ASR + Qwen-MT。客户端仍不保存云服务密钥。
+- 桌面端第一版默认以 `interpretation` 模式启动真实会话；当 Gateway 使用 `MODEL_PROVIDER=alibaba-cloud` 时，同传链路走 LiveTranslate，返回中文字幕和中文译音。
 - Windows WASAPI loopback 已接真实采集路径，输出 16 kHz mono PCM16 帧，并对默认输出设备切换给出可恢复错误提示。
 - Gateway 配置 `DATABASE_URL` 时使用 PostgreSQL 持久化邀请码、会话、字幕分段、修订、音频对象索引和用量事件；未配置时仅保留内存存储作为本地降级。
-- 会话结束时上传 `audio.pcm`、`segments.json` 和 `exports/*` 到 MinIO/OSS-compatible 对象存储；删除会话时先删除对象存储前缀，再清理 PostgreSQL 会话、分段、修订和音频对象索引。
-- 数据保留策略维持 PRD 确认的默认 30 天，不新增关闭云端保存开关。
+- 会话结束时上传 `audio.pcm`、可选 `audio-interpretation.pcm`、`segments.json` 和 `exports/*` 到 MinIO/OSS-compatible 对象存储；删除会话时先删除对象存储前缀，再清理 PostgreSQL 会话、分段、修订和音频对象索引。
+- 数据保留策略维持默认 30 天；中文译音音轨随会话一起按 30 天策略保存，不新增关闭云端保存开关。
+- 当前中文译音由桌面端 Web Audio 播放，尚未实现 Windows process-exclude loopback，因此译音可能被 WASAPI loopback 重新捕获。真实内测前仍需实现或验证回灌规避。
 - **Alpha 简化范围（为提速，本阶段不做）**：
   - Redis / Tair：不接入；本地 `docker-compose` 不启动 Redis。
   - 限流、并发控制、邀请码额度拦截（`quota_exhausted`）、在线会话分布式缓存。
@@ -53,7 +55,7 @@ npm run dev:desktop:web
 3. 启动 Gateway：`npm run dev:gateway`。`/health` 应返回 `databaseConfigured: true`、`redisConfigured: false`。
 4. 激活邀请码：`POST /invites/activate`，body 至少包含 `{"code":"ALPHA-DEV-2026"}`。
 5. 通过桌面端或 WebSocket 测试脚本发起 `session.start`、若干 `audio.frame`、`session.stop`。停止后应在 PostgreSQL 看到 `realtime_sessions`、`subtitle_segments`、`segment_revisions`、`usage_events`、`session_audio_objects` 记录。
-6. 在 MinIO bucket `lingua-bridge-dev` 中应看到 `users/{userId}/sessions/{sessionId}/audio.pcm`、`segments.json` 和 `exports/transcript.md|subtitle.srt|session.json`。
+6. 在 MinIO bucket `lingua-bridge-dev` 中应看到 `users/{userId}/sessions/{sessionId}/audio.pcm`、`segments.json` 和 `exports/transcript.md|subtitle.srt|session.json`；同传模式还应看到 `audio-interpretation.pcm`。
 7. 调用 `DELETE /sessions/{sessionId}` 后，对象存储对应前缀应被删除，PostgreSQL 中该会话的 session/segments/revisions/audio object 索引被清理；用量事件保留并去掉 `session_id`，标记 `deletedSession`。
 
 ## 5. Phase 0 待验证
@@ -61,7 +63,7 @@ npm run dev:desktop:web
 - Windows WASAPI loopback：默认输出设备、蓝牙耳机切换、空音频、采样率转换。当前实现可采集并检测默认输出切换，仍需设备矩阵实测。
 - 字幕浮窗：置顶、多显示器、DPI 缩放、锁定和透明度。当前浮窗不再读取 `mockData`，只展示主窗口同步来的实时字幕。
 - ASR + Qwen-MT：5 段技术视频样本延迟和术语表现。当前 Gateway 已有真实 provider 入口，默认仍为 mock。
-- LiveTranslate：与 ASR + MT 对比延迟、分段和术语质量。当前保留配置开关，尚未作为默认字幕链路。
+- LiveTranslate：第一版同传模式已接入 Gateway，仍需用真实阿里云凭证验证延迟、分段、术语质量和回灌风险。
 - 会话落盘：音频、字幕、修订历史、导出文件、删除路径。
 - 邀请码和用量：激活、额度、append-only usage events、后台成本口径。
 
@@ -143,6 +145,24 @@ audio.frame
 7. Gateway 会把 PCM16 16 kHz mono 音频帧转发到阿里云实时 ASR，收到 partial/final ASR 文本后调用 Qwen-MT，再向客户端发 `subtitle.segment.updated`；修订 timer 会把最近 2-4 段送入 revision provider，并只推送最近两段 `revised`。如果已经连接但没有字幕，把 `LOG_LEVEL=debug` 后重启 Gateway，检查是否依次出现 `Alibaba Cloud realtime ASR session connected`、`session.updated`、`sent audio frame to Alibaba Cloud realtime ASR`、`input_audio_buffer.speech_started`、`conversation.item.input_audio_transcription.text`、`conversation.item.input_audio_transcription.completed` 或 provider error。
 8. 记录 5 段技术样本的首句延迟、稳态延迟、术语错误和中断情况。`qwen3-asr-flash-realtime` 当前时间戳能力有限，字幕时间暂以 Gateway 收到的音频时长近似；若需要更稳定时间戳，继续评估 Fun-ASR/Paraformer。
 
-### LiveTranslate Spike
+### LiveTranslate 中文同传链路
 
-当前 `.env.example` 保留 `LIVETRANSLATE_SPIKE_ENABLED`、`LIVETRANSLATE_REALTIME_URL` 和 `LIVETRANSLATE_MODEL`。Phase 0 可在后续添加独立 adapter 做延迟、术语和分段对比；本次实现未把 LiveTranslate 接为默认字幕输出链路。
+第一版桌面端默认发送 `mode: "interpretation"` 与 `outputAudio: true`。Gateway 在 `MODEL_PROVIDER=alibaba-cloud` 时会创建 `AlibabaCloudLiveTranslateSession`，并把中文译音通过 `interpretation.audio.delta` 事件推给桌面端播放。
+
+配置项：
+
+- `LIVETRANSLATE_REALTIME_URL=wss://dashscope.aliyuncs.com/api-ws/v1/realtime`
+- `LIVETRANSLATE_MODEL=qwen3.5-livetranslate-flash-realtime`
+- `LIVETRANSLATE_VOICE=Tina`
+- `LIVETRANSLATE_OUTPUT_SAMPLE_FORMAT=pcm_s16le`
+- `LIVETRANSLATE_OUTPUT_SAMPLE_RATE=24000`
+
+验证步骤：
+
+1. 设置 `MODEL_PROVIDER=alibaba-cloud`，并设置 `ALIBABA_MODEL_STUDIO_API_KEY` 或 `DASHSCOPE_API_KEY`。
+2. 运行 `npm run diagnose:config -w @lingua-bridge/gateway`，确认 `liveTranslate.model`、`voice`、`outputSampleFormat`、`outputSampleRate` 符合预期。
+3. 启动 `npm run dev:gateway` 和 `npm run dev:desktop`，主窗口完成邀请码和授权后点击开始。
+4. 播放英文技术内容，确认主窗口出现中文字幕，并能听到中文译音。
+5. 停止后检查对象存储和 `session_audio_objects`，应包含源音频和 `kind=interpretation` 的中文译音音轨。
+
+当前限制：中文译音先用 Web Audio 播放，没有独立音量滑杆和原生 WASAPI render；Windows loopback 仍可能捕获 LinguaBridge 自己播放的中文译音。下一步应优先做 process-exclude loopback 或可选音频路由隔离。

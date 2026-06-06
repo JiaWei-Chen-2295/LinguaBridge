@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import type { InterpretationAudioSampleFormat } from "@lingua-bridge/protocol";
 import path from "node:path";
 
 export type LogLevel =
@@ -60,6 +61,9 @@ export interface LiveTranslateSpikeConfig {
   enabled: boolean;
   websocketUrl: string;
   model: string;
+  voice: string;
+  outputSampleFormat: InterpretationAudioSampleFormat;
+  outputSampleRate: number;
 }
 
 export type ObjectStorageProvider = "disabled" | "minio" | "oss";
@@ -261,7 +265,14 @@ function readModelConfig(env: NodeJS.ProcessEnv): ModelConfig {
         env,
         "LIVETRANSLATE_MODEL",
         "qwen3.5-livetranslate-flash-realtime"
-      )
+      ),
+      voice: readString(env, "LIVETRANSLATE_VOICE", "Tina"),
+      outputSampleFormat: readInterpretationAudioSampleFormat(
+        env,
+        "LIVETRANSLATE_OUTPUT_SAMPLE_FORMAT",
+        "pcm_s16le"
+      ),
+      outputSampleRate: readInteger(env, "LIVETRANSLATE_OUTPUT_SAMPLE_RATE", 24_000)
     }
   };
 }
@@ -528,6 +539,19 @@ function readAlibabaAsrInputAudioFormat(
   // The gateway always sends raw PCM16 16 kHz mono bytes. DashScope names that
   // websocket session format "pcm", while older local examples used "pcm16".
   return raw === "pcm" || raw === "pcm16" ? "pcm" : fallback;
+}
+
+function readInterpretationAudioSampleFormat(
+  env: NodeJS.ProcessEnv,
+  key: string,
+  fallback: InterpretationAudioSampleFormat
+): InterpretationAudioSampleFormat {
+  const raw = env[key];
+  if (!hasNonEmptyString(raw)) {
+    return fallback;
+  }
+
+  return raw === "pcm_s16le" || raw === "pcm_s24le" ? raw : fallback;
 }
 
 function readObjectStorageProvider(

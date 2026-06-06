@@ -11,6 +11,15 @@ export type LanguagePair = {
 export type SubtitleSegmentStatus = "draft" | "final" | "revised";
 export type SessionStatus = "pending" | "active" | "paused" | "stopped" | "error" | "deleted";
 export type ExportFormat = "markdown" | "srt" | "json";
+export type RealtimeSessionMode = "subtitle" | "interpretation";
+
+export type InterpretationAudioSampleFormat = "pcm_s16le" | "pcm_s24le";
+
+export type InterpretationOptions = {
+  outputAudio: boolean;
+  voice?: string;
+  echoAvoidance: "process_exclude" | "separate_device" | "disabled";
+};
 
 export type DeviceInfo = {
   os: "windows";
@@ -38,6 +47,8 @@ export type RealtimeServerMessage =
   | GatewayReadyEvent
   | SessionStartedEvent
   | SubtitleSegmentUpdatedEvent
+  | InterpretationAudioDeltaEvent
+  | InterpretationAudioCompletedEvent
   | UsageUpdatedEvent
   | SessionStoppedEvent
   | GatewayErrorEvent;
@@ -49,6 +60,8 @@ export type RealtimeSessionStartMessage = {
   payload: {
     inviteCode: string;
     userId?: string;
+    mode?: RealtimeSessionMode;
+    interpretation?: InterpretationOptions;
     language: LanguagePair;
     device: DeviceInfo;
     privacyConsent: PrivacyConsent;
@@ -122,6 +135,35 @@ export type SubtitleSegmentUpdatedEvent = {
   type: "subtitle.segment.updated";
   version: ProtocolVersion;
   payload: SubtitleSegment;
+};
+
+export type InterpretationAudioDeltaEvent = {
+  type: "interpretation.audio.delta";
+  version: ProtocolVersion;
+  payload: {
+    sessionId: string;
+    trackId: string;
+    sequence: number;
+    pcmBase64: string;
+    sampleRate: number;
+    channels: 1;
+    sampleFormat: InterpretationAudioSampleFormat;
+    durationMs: number;
+    sourceSegmentId?: string;
+    latencyMs: number;
+    modelTrace: ModelTrace;
+  };
+};
+
+export type InterpretationAudioCompletedEvent = {
+  type: "interpretation.audio.completed";
+  version: ProtocolVersion;
+  payload: {
+    sessionId: string;
+    trackId: string;
+    totalDurationMs: number;
+    modelTrace: ModelTrace;
+  };
 };
 
 export type UsageUpdatedEvent = {
@@ -208,8 +250,9 @@ export type SegmentRevision = {
 export type ModelTrace = {
   provider: "mock" | "alibaba-cloud";
   asrModel: "mock-asr" | "qwen3-asr-flash-realtime" | "fun-asr-realtime" | "paraformer-realtime-v2";
-  mtModel: "mock-mt" | "qwen-mt-flash" | "qwen-mt-lite" | "qwen-mt-plus";
+  mtModel: "mock-mt" | "qwen-mt-flash" | "qwen-mt-lite" | "qwen-mt-plus" | "qwen3.5-livetranslate-flash-realtime";
   correctionModel?: "mock-correction" | "qwen-plus" | "qwen-turbo";
+  liveTranslateModel?: "qwen3.5-livetranslate-flash-realtime";
 };
 
 export type UsageEventType =
@@ -218,6 +261,8 @@ export type UsageEventType =
   | "mt_output_tokens"
   | "revision_tokens"
   | "oss_audio_storage"
+  | "interpretation_audio_duration"
+  | "interpretation_audio_storage"
   | "session_realtime_duration"
   | "session_interruption";
 
@@ -326,6 +371,8 @@ function isSessionStartPayload(value: unknown): boolean {
   return (
     typeof value.inviteCode === "string" &&
     value.inviteCode.length > 0 &&
+    isOptionalRealtimeSessionMode(value.mode) &&
+    isOptionalInterpretationOptions(value.interpretation) &&
     value.language.sourceLang === "en" &&
     value.language.targetLang === "zh-CN" &&
     value.device.os === "windows" &&
@@ -334,6 +381,28 @@ function isSessionStartPayload(value: unknown): boolean {
     value.privacyConsent.accepted === true &&
     value.privacyConsent.cloudStorageRequired === true &&
     value.privacyConsent.retentionDays === 30
+  );
+}
+
+function isOptionalRealtimeSessionMode(value: unknown): boolean {
+  return value === undefined || value === "subtitle" || value === "interpretation";
+}
+
+function isOptionalInterpretationOptions(value: unknown): boolean {
+  if (value === undefined) {
+    return true;
+  }
+
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    typeof value.outputAudio === "boolean" &&
+    (value.voice === undefined || typeof value.voice === "string") &&
+    (value.echoAvoidance === "process_exclude" ||
+      value.echoAvoidance === "separate_device" ||
+      value.echoAvoidance === "disabled")
   );
 }
 

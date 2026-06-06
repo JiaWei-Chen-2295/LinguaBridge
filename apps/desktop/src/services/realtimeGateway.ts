@@ -1,7 +1,11 @@
 import type {
   GatewayErrorEvent,
+  InterpretationAudioCompletedEvent,
+  InterpretationAudioDeltaEvent,
+  InterpretationOptions,
   RealtimeAudioFrameMessage,
   RealtimeClientMessage,
+  RealtimeSessionMode,
   RealtimeServerMessage,
   RealtimeSessionStartMessage,
   RealtimeSessionStopMessage,
@@ -18,10 +22,16 @@ const STOP_TIMEOUT_MS = 3_000;
 export interface StartRealtimeSessionInput {
   inviteCode: string;
   deviceId: string | null;
+  mode?: RealtimeSessionMode;
+  outputAudio?: boolean;
+  interpretationVoice?: string;
+  echoAvoidance?: InterpretationOptions["echoAvoidance"];
 }
 
 export interface RealtimeGatewayHandlers {
   onSubtitle: (event: SubtitleSegmentUpdatedEvent) => void;
+  onInterpretationAudioDelta?: (event: InterpretationAudioDeltaEvent) => void;
+  onInterpretationAudioCompleted?: (event: InterpretationAudioCompletedEvent) => void;
   onError: (event: GatewayErrorEvent) => void;
   onStopped: (event: SessionStoppedEvent) => void;
 }
@@ -156,6 +166,16 @@ export class RealtimeGatewayConnection {
       return;
     }
 
+    if (message.type === "interpretation.audio.delta") {
+      this.handlers.onInterpretationAudioDelta?.(message);
+      return;
+    }
+
+    if (message.type === "interpretation.audio.completed") {
+      this.handlers.onInterpretationAudioCompleted?.(message);
+      return;
+    }
+
     if (message.type === "gateway.error") {
       this.handlers.onError(message);
       return;
@@ -182,24 +202,41 @@ function startMessage(
     device.deviceId = input.deviceId;
   }
 
+  const payload: RealtimeSessionStartMessage["payload"] = {
+    inviteCode: input.inviteCode,
+    language: {
+      sourceLang: "en",
+      targetLang: "zh-CN"
+    },
+    device,
+    privacyConsent: {
+      accepted: true,
+      acceptedAt: new Date().toISOString(),
+      retentionDays: 30,
+      cloudStorageRequired: true
+    }
+  };
+  const mode = input.mode ?? "subtitle";
+  if (mode !== "subtitle") {
+    payload.mode = mode;
+  }
+
+  if (mode === "interpretation") {
+    const interpretation: InterpretationOptions = {
+      outputAudio: input.outputAudio ?? true,
+      echoAvoidance: input.echoAvoidance ?? "disabled"
+    };
+    if (input.interpretationVoice !== undefined) {
+      interpretation.voice = input.interpretationVoice;
+    }
+    payload.interpretation = interpretation;
+  }
+
   return {
     type: "session.start",
     version: 1,
     requestId: createRequestId("start"),
-    payload: {
-      inviteCode: input.inviteCode,
-      language: {
-        sourceLang: "en",
-        targetLang: "zh-CN"
-      },
-      device,
-      privacyConsent: {
-        accepted: true,
-        acceptedAt: new Date().toISOString(),
-        retentionDays: 30,
-        cloudStorageRequired: true
-      }
-    }
+    payload
   };
 }
 
