@@ -66,8 +66,6 @@ export class LiveTranslateTextBuffer {
       return snapshotSegment(segment, false, false);
     }
 
-    this.lastItemId = itemId;
-
     const currentText =
       update.kind === "source" ? segment.sourceText : segment.targetText;
     const merged =
@@ -89,16 +87,17 @@ export class LiveTranslateTextBuffer {
     }
 
     const completionChanged = this.applyCompletion(segment, update);
-    if (textChanged || completionChanged) {
+    const changed = textChanged || completionChanged;
+    if (changed) {
       segment.revision += 1;
       segment.lastUpdatedAtMs = update.receivedAtMs;
     }
 
-    return snapshotSegment(
-      segment,
-      textChanged || completionChanged,
-      merged.shortTextIgnored
-    );
+    if (changed || update.itemId === undefined) {
+      this.lastItemId = itemId;
+    }
+
+    return snapshotSegment(segment, changed, merged.shortTextIgnored);
   }
 
   private resolveItemId(itemId: string | undefined): string {
