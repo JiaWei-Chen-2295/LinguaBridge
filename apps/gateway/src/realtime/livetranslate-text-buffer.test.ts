@@ -195,6 +195,37 @@ test("LiveTranslateTextBuffer replaces draft with completed semantic target text
   assert.equal(finalSegment?.status, "final");
 });
 
+test("LiveTranslateTextBuffer prefers completed target text over overlap merge", () => {
+  const buffer = new LiveTranslateTextBuffer();
+
+  buffer.apply({
+    itemId: "item_1",
+    kind: "source",
+    phase: "completed",
+    text: "Final source.",
+    receivedAtMs: 100
+  });
+  buffer.apply({
+    itemId: "item_1",
+    kind: "target",
+    phase: "draft",
+    text: "Hello world",
+    receivedAtMs: 200
+  });
+  const finalSegment = buffer.apply({
+    itemId: "item_1",
+    kind: "target",
+    phase: "completed",
+    text: "world peace",
+    receivedAtMs: 300
+  });
+
+  assert.equal(finalSegment?.targetText, "world peace");
+  assert.equal(finalSegment?.status, "final");
+  assert.equal(finalSegment?.changed, true);
+  assert.equal(finalSegment?.shortTextIgnored, false);
+});
+
 test("LiveTranslateTextBuffer marks empty completed target while retaining draft text", () => {
   const buffer = new LiveTranslateTextBuffer();
 

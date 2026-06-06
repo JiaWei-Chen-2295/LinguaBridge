@@ -189,6 +189,10 @@ function mergeStreamingText(
     return { text: previousText, shortTextIgnored: false };
   }
 
+  if (completed) {
+    return { text: incomingText, shortTextIgnored: false };
+  }
+
   if (incomingText.startsWith(previousText)) {
     return { text: incomingText, shortTextIgnored: false };
   }
@@ -199,10 +203,6 @@ function mergeStreamingText(
       text: `${previousText}${incomingText.slice(overlapLength)}`,
       shortTextIgnored: false
     };
-  }
-
-  if (completed) {
-    return { text: incomingText, shortTextIgnored: false };
   }
 
   if (incomingText.length < previousText.length) {
