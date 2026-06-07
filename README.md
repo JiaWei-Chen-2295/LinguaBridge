@@ -14,15 +14,13 @@
   <strong>🎬 产品演示视频</strong> · <a href="https://www.bilibili.com/video/BV1iVEs6LEr9">Bilibili 演示</a>
 </p>
 
-<details>
-<summary><strong>▶ 点击展开视频预览</strong></summary>
-
-<iframe src="https://player.bilibili.com/player.html?bvid=BV1iVEs6LEr9&autoplay=0" width="640" height="360" frameborder="0" allowfullscreen="true" scrolling="no"></iframe>
-
-</details>
+<p align="center">
+  <a href="https://www.bilibili.com/video/BV1iVEs6LEr9" title="点击观看 LinguaBridge 演示视频">
+    <img src="https://i1.hdslb.com/bfs/archive/1978b7e50cc79a8ae7bc66415838cbbb76a01390.jpg" alt="LinguaBridge 产品演示视频" width="640" style="border-radius: 8px; max-width: 100%;">
+  </a>
+</p>
 
 ---
->>>>>>> origin/main
 
 ## 项目简介
 
