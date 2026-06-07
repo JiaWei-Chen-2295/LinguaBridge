@@ -8,6 +8,12 @@ LinguaBridge 当前聚焦于面向中文技术学习者的 PC 端 AI 实时字�
 
 MVP 目标是在 Windows 10/11 上通过系统音频录制生成英文原文与中文字幕，支持字幕自动纠错，并将音频、文本和修订历史落盘，供后续精读解析与学习复盘使用。
 
+## 视频介绍
+
+> 📺 点击观看完整演示视频：[Bilibili - LinguaBridge 演示](https://www.bilibili.com/video/BV1iVEs6LEr9)
+
+<iframe src="https://player.bilibili.com/player.html?bvid=BV1iVEs6LEr9&autoplay=0" width="640" height="360" frameborder="0" allowfullscreen="true" scrolling="no"></iframe>
+
 ## 当前阶段
 
 当前处于产品定义与技术选型阶段，Alpha 计划采用邀请码 + 用量统计，不先接正式支付。
