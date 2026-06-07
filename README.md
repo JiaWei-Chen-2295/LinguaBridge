@@ -11,10 +11,18 @@
 ![LinguaBridge AI 实时同声传译封面](./assets/linguabridge-simultaneous-interpretation-cover.png)
 
 <p align="center">
-  <strong>🎬 产品演示视频</strong> · <em>视频链接即将上线，敬请期待</em>
+  <strong>🎬 产品演示视频</strong> · <a href="https://www.bilibili.com/video/BV1iVEs6LEr9">Bilibili 演示</a>
 </p>
 
+<details>
+<summary><strong>▶ 点击展开视频预览</strong></summary>
+
+<iframe src="https://player.bilibili.com/player.html?bvid=BV1iVEs6LEr9&autoplay=0" width="640" height="360" frameborder="0" allowfullscreen="true" scrolling="no"></iframe>
+
+</details>
+
 ---
+>>>>>>> origin/main
 
 ## 项目简介
 
