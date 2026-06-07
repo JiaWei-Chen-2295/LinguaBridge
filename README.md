@@ -70,7 +70,7 @@
 > ⚙️ **环境要求**：**Node.js ≥ 22** · Rust 工具链（Windows）
 
 ```bash
-git clone https://github.com/<your-username>/LinguaBridge.git
+git clone https://github.com/JiaWei-Chen-2295/LinguaBridge.git
 cd LinguaBridge
 npm install
 
